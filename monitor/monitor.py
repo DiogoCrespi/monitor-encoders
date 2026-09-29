@@ -1,0 +1,182 @@
+"""
+Monitor de saude de encoder - treina so com operacao normal.
+
+Formato de dados de entrada (uma linha por amostra, uma linha de papel):
+    t_s              tempo em segundos
+    v_setpoint       setpoint de velocidade da linha (m/min)
+    v_<encoder>      velocidade lida de cada encoder (m/min), ex.: v_festoon, v_pb1, v_pb2
+    erros_<encoder>  contador ACUMULADO de erros de comunicacao do encoder (opcional),
+                     ex.: contadores de erro do barramento do encoder ou bits de alarme
+
+Indicadores (cada um com sua linha de corte = maior valor visto na calibracao + margem):
+    vizinhos  EWMA do residuo entre o encoder e a estimativa feita pelos vizinhos
+              (redundancia analitica: todos puxam o mesmo papel) -> deriva, perda de pulsos
+    proprio   EWMA do |residuo| de um preditor do proprio sinal (AR)       -> picos, ruido
+    erros     erros de comunicacao na ultima hora                          -> cabo/conector
+"""
+import json
+
+import numpy as np
+import pandas as pd
+from scipy.signal import lfilter
+
+V_RODANDO = 50.0      # m/min
+LAGS_VIZ = 3
+LAGS_AR = 5
+
+
+def validar_formato(df, alvo, vizinhos):
+    faltando = [c for c in ["t_s", "v_setpoint", f"v_{alvo}"] + [f"v_{v}" for v in vizinhos]
+                if c not in df.columns]
+    if faltando:
+        raise ValueError(f"colunas ausentes no arquivo: {faltando}")
+
+
+def _atraso(x, k):
+    return np.concatenate([np.full(k, x[0]), x[:-k]])
+
+
+def _ewma(x, lam):
+    return lfilter([lam], [1, -(1 - lam)], x)
+
+
+def _mq(X, y, alpha=1e-3):
+    """Minimos quadrados com regularizacao leve; devolve coeficientes com intercepto no fim."""
+    A = np.column_stack([X, np.ones(len(X))])
+    return np.linalg.solve(A.T @ A + alpha * np.eye(A.shape[1]), A.T @ y)
+
+
+def _prever(coef, X):
+    return X @ coef[:-1] + coef[-1]
+
+
+class MonitorEncoder:
+    def __init__(self, alvo, vizinhos, fs=10, lam=0.05, persist_s=2.0, holdoff_min=10.0,
+                 margem=1.1):
+        self.alvo, self.vizinhos, self.fs = alvo, list(vizinhos), fs
+        self.lam, self.persist = lam, max(1, int(persist_s * fs))
+        self.holdoff, self.margem = int(holdoff_min * 60 * fs), margem
+
+    # ------------------------------------------------------------ atributos
+    def _rodando(self, df):
+        return df[[f"v_{v}" for v in self.vizinhos]].mean(axis=1).to_numpy() > V_RODANDO
+
+    def _x_viz(self, df):
+        cols = [df["v_setpoint"].to_numpy()]
+        for v in self.vizinhos:
+            x = df[f"v_{v}"].to_numpy()
+            cols += [x] + [_atraso(x, k) for k in range(1, LAGS_VIZ + 1)]
+        return np.column_stack(cols)
+
+    def _x_ar(self, df):
+        y = df[f"v_{self.alvo}"].to_numpy()
+        return np.column_stack([_atraso(y, k) for k in range(1, LAGS_AR + 1)])
+
+    def _erros_1h(self, df):
+        col = f"erros_{self.alvo}"
+        if col not in df.columns:
+            return np.zeros(len(df))
+        c = df[col].to_numpy(float)
+        return c - _atraso(c, int(3600 * self.fs))
+
+    # ------------------------------------------------------------ treino
+    def treinar(self, df):
+        validar_formato(df, self.alvo, self.vizinhos)
+        m = self._rodando(df)
+        y = df[f"v_{self.alvo}"].to_numpy()
+        Xv, Xa = self._x_viz(df), self._x_ar(df)
+        self.coef_viz = _mq(Xv[m], y[m])
+        self.coef_ar = _mq(Xa[m], y[m])
+        self.sigma_viz = float((y[m] - _prever(self.coef_viz, Xv[m])).std())
+        self.sigma_ar = float((y[m] - _prever(self.coef_ar, Xa[m])).std())
+        return self
+
+    def _indicadores(self, df):
+        m = self._rodando(df)
+        y = df[f"v_{self.alvo}"].to_numpy()
+        est = _prever(self.coef_viz, self._x_viz(df))
+        z_viz = np.where(m, (y - est) / self.sigma_viz, 0.0)
+        z_ar = np.where(m, np.abs(y - _prever(self.coef_ar, self._x_ar(df))) / self.sigma_ar, 0.0)
+        return {
+            "rodando": m, "medida": y, "estimada": est,
+            "vizinhos": np.abs(_ewma(z_viz, self.lam)),
+            "desvio": _ewma(np.where(m, y - est, 0.0), self.lam),
+            # linha de base do |z| em operacao normal ~0,8; so interessa o excesso
+            "proprio": _ewma(z_ar, self.lam),
+            "erros": self._erros_1h(df),
+        }
+
+    def calibrar(self, df):
+        ind = self._indicadores(df)
+        m = ind["rodando"]
+        self.limiar = {
+            "vizinhos": float(self.margem * ind["vizinhos"][m].max()),
+            "proprio": float(self.margem * ind["proprio"][m].max()),
+            "erros": float(ind["erros"].max() + 2),
+        }
+        return self
+
+    # ------------------------------------------------------------ uso
+    def analisar(self, df):
+        validar_formato(df, self.alvo, self.vizinhos)
+        ind = self._indicadores(df)
+        t = df["t_s"].to_numpy()
+        eventos = []
+        for nome in ("vizinhos", "proprio", "erros"):
+            flag = ind[nome] > self.limiar[nome]
+            if nome != "erros":
+                flag &= ind["rodando"]
+            for i in self._eventos(flag, 1 if nome == "erros" else self.persist):
+                eventos.append({"t_s": float(t[i]), "indice": int(i), "indicador": nome,
+                                "valor": float(ind[nome][i]), "limiar": self.limiar[nome],
+                                "mensagem": self._mensagem(nome, ind, i)})
+        eventos.sort(key=lambda e: e["t_s"])
+        return ind, eventos
+
+    def _eventos(self, flag, persist):
+        cheio = np.convolve(flag.astype(int), np.ones(persist, int), "full")[:len(flag)] >= persist
+        out, ultimo = [], -self.holdoff
+        for i in np.flatnonzero(cheio):
+            if i - ultimo >= self.holdoff:
+                out.append(i)
+                ultimo = i
+        return out
+
+    def _mensagem(self, nome, ind, i):
+        a = self.alvo.upper()
+        if nome == "vizinhos":
+            d = ind["desvio"][i]
+            lado = "abaixo" if d < 0 else "acima"
+            return f"{a} lendo {abs(d):.1f} m/min {lado} do esperado pelos encoders vizinhos"
+        if nome == "proprio":
+            return (f"{a}: variação brusca/ruído no próprio sinal "
+                    f"(indicador {ind['proprio'][i]:.2f}, linha de corte {self.limiar['proprio']:.2f})")
+        return f"{a}: {ind['erros'][i]:.0f} erros de comunicação na última hora (normal até {self.limiar['erros'] - 2:.0f})"
+
+    # ------------------------------------------------------------ exportar
+    def exportar(self):
+        """Coeficientes em JSON - bastam multiplicacoes e somas para rodar em CLP/microcontrolador."""
+        return {"alvo": self.alvo, "vizinhos": self.vizinhos, "fs": self.fs, "lam": self.lam,
+                "persist_s": self.persist / self.fs, "holdoff_min": self.holdoff / 60 / self.fs,
+                "margem": self.margem, "coef_viz": self.coef_viz.tolist(),
+                "coef_ar": self.coef_ar.tolist(), "sigma_viz": self.sigma_viz,
+                "sigma_ar": self.sigma_ar, "limiar": self.limiar}
+
+    @classmethod
+    def carregar(cls, dados):
+        if isinstance(dados, str):
+            dados = json.loads(dados)
+        m = cls(dados["alvo"], dados["vizinhos"], dados["fs"], dados["lam"], dados["persist_s"],
+                dados["holdoff_min"], dados["margem"])
+        m.coef_viz, m.coef_ar = np.array(dados["coef_viz"]), np.array(dados["coef_ar"])
+        m.sigma_viz, m.sigma_ar, m.limiar = dados["sigma_viz"], dados["sigma_ar"], dados["limiar"]
+        return m
+
+
+def de_simulacao(df_sim):
+    """Converte a saida de poc.poc_deteccao.simular para o formato de dados do monitor."""
+    out = pd.DataFrame({"t_s": df_sim["t_s"], "v_setpoint": df_sim["setpoint"]})
+    for e in ("festoon", "pb1", "pb2"):
+        out[f"v_{e}"] = df_sim[e]
+    out["erros_pb1"] = df_sim["pb1_erros_com"].cumsum()
+    return out

@@ -1,0 +1,9 @@
+*.md
+!README.md
+__pycache__/
+*.pyc
+.pytest_cache/
+poc/dados_sinteticos/
+bases/SKAB/
+bases/PMSM/
+bases/*.zip
