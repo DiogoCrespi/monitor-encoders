@@ -14,6 +14,7 @@ import pandas as pd
 import pytest
 
 from monitor import MonitorEncoder, de_simulacao
+from poc.malha_fechada import simular_mf
 from poc.poc_deteccao import simular
 
 FS = 10
@@ -85,3 +86,34 @@ def test_exportar_e_carregar_reproduz_resultado(monitor):
     ind_b, ev_b = copia.analisar(df)
     assert ev_a == ev_b
     np.testing.assert_allclose(ind_a["vizinhos"], ind_b["vizinhos"])
+
+
+# ---------------------------------------------------------------- malha fechada
+
+
+@pytest.fixture(scope="module")
+def monitor_mf():
+    return MonitorEncoder("pb1", ["festoon", "pb2"], fs=FS).treinar(simular_mf(8, seed=1)).calibrar(simular_mf(8, seed=2))
+
+
+def test_malha_fechada_esconde_deriva_da_velocidade_lida():
+    df = simular_mf(6, seed=10, falha="deriva_ganho")
+    fim = (df["severidade"] > 0.9) & (df["v_setpoint"] > 300)
+    lida = (df.loc[fim, "v_pb1"] - df.loc[fim, "v_setpoint"]).mean()
+    real = (df.loc[fim, "v_real_pb1"] - df.loc[fim, "v_setpoint"]).mean()
+    assert abs(lida) < 0.1 and real > 0.15, (lida, real)
+
+
+def test_torque_detecta_deriva_que_a_velocidade_nao_ve(monitor_mf):
+    _, eventos = monitor_mf.analisar(simular_mf(6, seed=10, falha="deriva_ganho"))
+    depois = [e for e in eventos if e["indice"] >= F0]
+    assert not [e for e in eventos if e["indice"] < F0]
+    assert {e["indicador"] for e in depois} == {"torque"}, depois
+    assert "acima" in depois[0]["mensagem"]
+
+
+def test_exportar_com_torque_reproduz_resultado(monitor_mf):
+    df = simular_mf(6, seed=11, falha="deriva_ganho")
+    _, ev_a = monitor_mf.analisar(df)
+    _, ev_b = MonitorEncoder.carregar(json.dumps(monitor_mf.exportar())).analisar(df)
+    assert ev_a == ev_b

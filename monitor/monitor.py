@@ -7,12 +7,23 @@ Formato de dados de entrada (uma linha por amostra, uma linha de papel):
     v_<encoder>      velocidade lida de cada encoder (m/min), ex.: v_festoon, v_pb1, v_pb2
     erros_<encoder>  contador ACUMULADO de erros de comunicacao do encoder (opcional),
                      ex.: contadores de erro do barramento do encoder ou bits de alarme
+    tq_<encoder>     torque do motor de cada rolo (N.m) (opcional; liga o indicador 'torque')
 
 Indicadores (cada um com sua linha de corte = maior valor visto na calibracao + margem):
     vizinhos  EWMA do residuo entre o encoder e a estimativa feita pelos vizinhos
               (redundancia analitica: todos puxam o mesmo papel) -> deriva, perda de pulsos
     proprio   EWMA do |residuo| de um preditor do proprio sinal (AR)       -> picos, ruido
     erros     erros de comunicacao na ultima hora                          -> cabo/conector
+    torque    EWMA do residuo entre o torque do motor e a estimativa cinematica
+              (setpoint, aceleracao e velocidade do proprio rolo)          -> deriva em malha fechada
+
+Em malha fechada o drive corrige a velocidade que o encoder MEDE: um encoder que erra
+devagar nao aparece na velocidade lida, mas muda a tensao no papel e o torque.
+Por isso, com torque disponivel, o indicador 'torque' e o principal para deriva.
+O torque dos vizinhos NAO entra na estimativa: uma mudanca de tensao num vao move o
+torque dos dois rolos do vao em sentidos opostos, e o modelo aprenderia a explicar a
+falha como oscilacao normal de tensao. Pela mesma razao, o torque aponta o VAO com
+problema, nao qual dos dois encoders do vao esta errado.
 """
 import json
 
@@ -23,6 +34,8 @@ from scipy.signal import lfilter
 V_RODANDO = 50.0      # m/min
 LAGS_VIZ = 3
 LAGS_AR = 5
+LAGS_TQ = 2
+INDICADORES = ("vizinhos", "proprio", "torque", "erros")
 
 
 def validar_formato(df, alvo, vizinhos):
@@ -52,9 +65,9 @@ def _prever(coef, X):
 
 class MonitorEncoder:
     def __init__(self, alvo, vizinhos, fs=10, lam=0.05, persist_s=2.0, holdoff_min=10.0,
-                 margem=1.1):
+                 margem=1.1, lam_tq=0.005):
         self.alvo, self.vizinhos, self.fs = alvo, list(vizinhos), fs
-        self.lam, self.persist = lam, max(1, int(persist_s * fs))
+        self.lam, self.lam_tq, self.persist = lam, lam_tq, max(1, int(persist_s * fs))
         self.holdoff, self.margem = int(holdoff_min * 60 * fs), margem
 
     # ------------------------------------------------------------ atributos
@@ -71,6 +84,16 @@ class MonitorEncoder:
     def _x_ar(self, df):
         y = df[f"v_{self.alvo}"].to_numpy()
         return np.column_stack([_atraso(y, k) for k in range(1, LAGS_AR + 1)])
+
+    def _tem_torque(self, df):
+        return all(f"tq_{e}" in df.columns for e in [self.alvo] + self.vizinhos)
+
+    def _x_tq(self, df):
+        sp = df["v_setpoint"].to_numpy()
+        v = df[f"v_{self.alvo}"].to_numpy()
+        acel = np.gradient(v) * self.fs
+        cols = [sp, np.gradient(sp) * self.fs, v, acel] + [_atraso(acel, k) for k in range(1, LAGS_TQ + 1)]
+        return np.column_stack(cols)
 
     def _erros_1h(self, df):
         col = f"erros_{self.alvo}"
@@ -89,6 +112,11 @@ class MonitorEncoder:
         self.coef_ar = _mq(Xa[m], y[m])
         self.sigma_viz = float((y[m] - _prever(self.coef_viz, Xv[m])).std())
         self.sigma_ar = float((y[m] - _prever(self.coef_ar, Xa[m])).std())
+        self.coef_tq = self.sigma_tq = None
+        if self._tem_torque(df):
+            Xt, yt = self._x_tq(df), df[f"tq_{self.alvo}"].to_numpy()
+            self.coef_tq = _mq(Xt[m], yt[m])
+            self.sigma_tq = float((yt[m] - _prever(self.coef_tq, Xt[m])).std())
         return self
 
     def _indicadores(self, df):
@@ -97,8 +125,15 @@ class MonitorEncoder:
         est = _prever(self.coef_viz, self._x_viz(df))
         z_viz = np.where(m, (y - est) / self.sigma_viz, 0.0)
         z_ar = np.where(m, np.abs(y - _prever(self.coef_ar, self._x_ar(df))) / self.sigma_ar, 0.0)
+        tq = np.zeros(len(df))
+        desvio_tq = np.zeros(len(df))
+        if self.coef_tq is not None and self._tem_torque(df):
+            r = df[f"tq_{self.alvo}"].to_numpy() - _prever(self.coef_tq, self._x_tq(df))
+            tq = np.abs(_ewma(np.where(m, r / self.sigma_tq, 0.0), self.lam_tq))
+            desvio_tq = _ewma(np.where(m, r, 0.0), self.lam_tq)
         return {
             "rodando": m, "medida": y, "estimada": est,
+            "torque": tq, "desvio_tq": desvio_tq,
             "vizinhos": np.abs(_ewma(z_viz, self.lam)),
             "desvio": _ewma(np.where(m, y - est, 0.0), self.lam),
             # linha de base do |z| em operacao normal ~0,8; so interessa o excesso
@@ -112,6 +147,7 @@ class MonitorEncoder:
         self.limiar = {
             "vizinhos": float(self.margem * ind["vizinhos"][m].max()),
             "proprio": float(self.margem * ind["proprio"][m].max()),
+            "torque": float(self.margem * ind["torque"][m].max()) if self.coef_tq is not None else float("inf"),
             "erros": float(ind["erros"].max() + 2),
         }
         return self
@@ -122,7 +158,7 @@ class MonitorEncoder:
         ind = self._indicadores(df)
         t = df["t_s"].to_numpy()
         eventos = []
-        for nome in ("vizinhos", "proprio", "erros"):
+        for nome in INDICADORES:
             flag = ind[nome] > self.limiar[nome]
             if nome != "erros":
                 flag &= ind["rodando"]
@@ -151,25 +187,35 @@ class MonitorEncoder:
         if nome == "proprio":
             return (f"{a}: variação brusca/ruído no próprio sinal "
                     f"(indicador {ind['proprio'][i]:.2f}, linha de corte {self.limiar['proprio']:.2f})")
+        if nome == "torque":
+            d = ind["desvio_tq"][i]
+            lado = "acima" if d > 0 else "abaixo"
+            return (f"{a}: torque {abs(d):.1f} N.m {lado} do esperado para a velocidade "
+                    f"(tensão no papel alterada; verificar o encoder deste rolo e o do rolo vizinho)")
         return f"{a}: {ind['erros'][i]:.0f} erros de comunicação na última hora (normal até {self.limiar['erros'] - 2:.0f})"
 
     # ------------------------------------------------------------ exportar
     def exportar(self):
         """Coeficientes em JSON - bastam multiplicacoes e somas para rodar em CLP/microcontrolador."""
         return {"alvo": self.alvo, "vizinhos": self.vizinhos, "fs": self.fs, "lam": self.lam,
+                "lam_tq": self.lam_tq,
                 "persist_s": self.persist / self.fs, "holdoff_min": self.holdoff / 60 / self.fs,
                 "margem": self.margem, "coef_viz": self.coef_viz.tolist(),
                 "coef_ar": self.coef_ar.tolist(), "sigma_viz": self.sigma_viz,
-                "sigma_ar": self.sigma_ar, "limiar": self.limiar}
+                "sigma_ar": self.sigma_ar, "limiar": self.limiar,
+                "coef_tq": None if self.coef_tq is None else self.coef_tq.tolist(),
+                "sigma_tq": self.sigma_tq}
 
     @classmethod
     def carregar(cls, dados):
         if isinstance(dados, str):
             dados = json.loads(dados)
         m = cls(dados["alvo"], dados["vizinhos"], dados["fs"], dados["lam"], dados["persist_s"],
-                dados["holdoff_min"], dados["margem"])
+                dados["holdoff_min"], dados["margem"], dados.get("lam_tq", dados["lam"]))
         m.coef_viz, m.coef_ar = np.array(dados["coef_viz"]), np.array(dados["coef_ar"])
         m.sigma_viz, m.sigma_ar, m.limiar = dados["sigma_viz"], dados["sigma_ar"], dados["limiar"]
+        m.coef_tq = None if dados.get("coef_tq") is None else np.array(dados["coef_tq"])
+        m.sigma_tq = dados.get("sigma_tq")
         return m
 
 
