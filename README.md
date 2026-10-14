@@ -11,9 +11,40 @@ Quatro indicadores sobre o encoder monitorado:
 3. Erros de comunicação: erros do drive na última hora.
 4. Torque (opcional, colunas `tq_<encoder>`): resíduo entre o torque do motor e uma estimativa cinemática (setpoint, velocidade e aceleração do próprio rolo). Indicador = |EWMA do resíduo padronizado|, com memória de ~20 s.
 
-Em malha fechada, o drive corrige a velocidade que o encoder mede. Um erro lento do encoder some da velocidade lida e aparece na tensão do papel e no torque. Os indicadores 1 e 2 só pegam falhas mais rápidas que a malha; para deriva lenta, o indicador é o 4. O torque aponta o vão com tensão alterada, não qual dos dois encoders do vão está errado.
+Em malha fechada, o drive corrige a velocidade que o encoder mede. Um erro lento do encoder some da velocidade lida e aparece na tensão do papel e no torque. Os indicadores 1 e 2 só pegam falhas mais rápidas que a malha; para deriva lenta, o indicador é o 4. O indicador 4 olha um rolo só; qual encoder falhou sai do padrão de torque nos três rolos (`monitor/torque_v2.py`, abaixo).
 
 Linha de corte: 1,1 × o maior valor observado num trecho normal de calibração (contador: máximo + 2). O alarme dispara se o indicador passar do corte por 2 s, e cada indicador tem 10 min de intervalo entre alarmes.
+
+## Modelos v2 e monitor conjunto
+
+Três modelos novos, em módulos separados (o `monitor/monitor.py` original continua igual), reunidos em `monitor/conjunto.py`:
+
+1. Avisos e contadores do drive (`monitor/avisos.py`): cada aviso ou falha do histórico do drive vira um incidente de um canal (encoder, família `cabo` ou `sinal`). CUSUM de Poisson por canal, com a taxa normal estimada no histórico e a linha de corte pela meta de 1 falso alarme por semana na linha inteira (ARL por cadeia de Markov). Os códigos são genéricos (`aviso_cabo`, `aviso_sinal`, `falha_cabo`, `contador_erros`...); para dado real, `configurar_codigos()` troca a tabela pelos códigos do fabricante.
+2. Torque v2.1 com isolação (`monitor/torque_v2.py`): regressão com dinâmica por rolo, portão de regime (suspende em parada, rampa e emenda), médias de 1 min e resíduos estruturados. Um encoder lendo a menos muda os três torques com uma assinatura própria: Festoon (+1, 0, −1), P&B1 (−1, +1, 0), P&B2 (0, −1, +1); causa mecânica muda só o torque do próprio rolo. CUSUM bilateral em cada hipótese, limite pela meta de falso alarme via reamostragem em blocos. Usa a tensão das pontas (`tensao_entrada`, `tensao_saida`) se houver.
+3. Próximo passo v2 (`monitor/proximo_passo_v2.py`): ARX com o setpoint (ordem por BIC) e branqueamento do resíduo; alarme por variância do resíduo em 5 min ou contagem de picos em 10 min, com limite pela meta de falso alarme.
+
+`MonitorConjunto` liga cada modelo conforme os dados disponíveis e emite eventos com o modelo que disparou, o encoder suspeito, a mensagem para o técnico e a severidade (`alta` com isolação confirmada ou com dois modelos apontando o mesmo encoder em 2 h; `baixa` quando vários encoders avisam juntos, provável causa comum).
+
+Simulador v2 (`poc/malha_fechada_v2.py`): malha de velocidade de 10 ms, atraso da tensão L/v, EA = 2·10⁶ N, tensão de 700–900 N/m, deriva de 0,005 %, falha injetável em qualquer rolo, atrito e aquecimento do redutor variando, opção de malha de tensão no P&B2. Avisos sintéticos em `poc/simulador_avisos.py`, com acoplamento aos cenários do simulador v2 (`simular_acoplado`). Todos os parâmetros são hipóteses.
+
+Resultados de cada modelo no seu próprio teste (sementes não usadas no desenvolvimento):
+
+- Avisos: 10/10 degradações detectadas, antecedência mediana de 29 h antes da falha final, 0,60 falso alarme por semana numa linha de 10 encoders. A regra "máximo + 2 na última hora" deu 5/10 e 1,5 por semana.
+- Torque v2.1: deriva 10/10 nos três rolos (25–42 min), 1 falso alarme em 240 h. Isolação confirmada em 29/30 derivas só com torque e setpoint, 30/30 com a tensão das pontas.
+- Próximo passo v2, simulador com malha lenta: perda de pulsos e ruído 10/10 (7 e 14 min), 0 falso alarme em 240 h.
+
+Validação conjunta (`validacao_conjunta.py`): os três modelos juntos no simulador v2, com avisos acoplados. Teste rodado uma vez em sementes novas: falhas 211–220 (12 casos × 10 cenários de 6 h, falha a partir de 1 h, rampa de 4 h), normais 191–195 (5 × 48 h).
+
+| Caso | Detecção | Primeiro a disparar | Isolação no 1º evento |
+|---|---|---|---|
+| Deriva Festoon / P&B1 / P&B2 | 10/10, 35 / 27 / 31 min | torque | 30/30 |
+| Atrito Festoon / P&B1 / P&B2 | 10/10, 91 / 63 / 78 min | torque | 27/30 (confirmada 30/30) |
+| Perda de pulsos P&B1 / P&B2 | 10/10, 143 / 139 min | avisos 9, torque 11 | 18/20 |
+| Ruído P&B1 / P&B2 | 9/10, 147 / 158 min | avisos | 18/18 |
+| Erros de comunicação P&B1 | 10/10, 163 min | avisos | 10/10 |
+| Degradação de sinal Festoon | 9/10, 232 min | avisos | 9/9 |
+
+Falsos alarmes do conjunto: 0 em 240 h normais e 0 na primeira hora dos 120 cenários (360 h; a 95 %, menos de ~1,4 por semana). O modelo de avisos sozinho, em 20 semanas de log normal da mesma linha, deu 0,45 por semana. Total: 117/120 cenários detectados; o primeiro evento apontou o encoder (ou a causa mecânica) certo em 112/117.
 
 ## Dados
 
@@ -71,7 +102,10 @@ Comparações adicionais (`comparacoes.py`):
 
 - Os dados de encoder são simulados. As bases públicas são reais, mas não têm falha de encoder.
 - A simulação em malha fechada é linear e considera os rolos só com controle de velocidade, sem malha de tensão local.
-- O torque não distingue qual dos dois encoders de um vão está errado. Para isso é preciso uma referência de velocidade independente.
+- Um indicador de torque por rolo não diz qual encoder falhou; o padrão nos três rolos diz (29/30 em simulação, 30/30 com a tensão das pontas). Exige torque dos três rolos e hipótese de falha única.
+- Na validação conjunta, ruído, erros de comunicação e degradação de sinal só foram detectados porque a simulação supõe que o drive emite avisos (2 incidentes por hora na severidade máxima). Sem aviso, ruído fica 0/10 no simulador v2.
+- O próximo passo v2 não disparou em nenhum cenário do simulador v2: a malha de 10 ms corrige o erro antes da amostra de 10 Hz e a velocidade lida fica igual à referência. Ele precisa de velocidade registrada mais rápido que a malha, ou de malha mais lenta.
+- Rolo com malha de tensão local: a deriva do encoder vai para a correção de velocidade, não para o torque (1/10 no P&B2 nesse modo).
 - Falsos alarmes: 0 em 240 h (sem malha fechada) equivale a uma taxa < ~0,3/dia (95%), não a zero; com malha fechada e torque foram 3 em 240 h (~0,3/dia).
 - A simulação assume draw constante entre os rolos. Com dado real, o setpoint de tensão e o torque devem entrar como entradas.
 
@@ -80,11 +114,15 @@ Comparações adicionais (`comparacoes.py`):
 Requisitos: `numpy pandas scipy scikit-learn pytest tabulate`.
 
 ```
-python -m pytest -q
+python -m pytest -q                       # 74 testes
 python poc/poc_deteccao.py
 python validacao.py
 python validacao_malha_fechada.py
 python comparacoes.py
+python validacao_avisos.py
+python validacao_torque_v2.py
+python validacao_proximo_passo_v2.py teste
+python validacao_conjunta.py teste
 python -m monitor.gerar_dashboard
 ```
 
@@ -103,4 +141,16 @@ Entrada para dado real: CSV com `t_s, v_setpoint, v_<encoder>..., erros_<encoder
 from monitor import MonitorEncoder
 m = MonitorEncoder("pb1", ["festoon", "pb2"], fs=10).treinar(df_normal_1).calibrar(df_normal_2)
 indicadores, alarmes = m.analisar(df)
+```
+
+Monitor conjunto, com o histórico de avisos do drive (`t_s, encoder, codigo, tipo`) no mesmo relógio do CSV:
+
+```python
+from monitor import MonitorConjunto
+mc = MonitorConjunto().treinar([df_normal_1, df_normal_2], eventos=avisos_normais,
+                               duracao_eventos_s=14 * 86400,
+                               encoders={"festoon": "tipo_a", "pb1": "tipo_a", "pb2": "tipo_b"})
+mc.calibrar([df_normal_3, df_normal_4])
+for e in mc.analisar(df, eventos=avisos):
+    print(e["t_s"], e["modelo"], e["encoder"], e["severidade"], e["mensagem"])
 ```

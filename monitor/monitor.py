@@ -20,10 +20,13 @@ Indicadores (cada um com sua linha de corte = maior valor visto na calibracao + 
 Em malha fechada o drive corrige a velocidade que o encoder MEDE: um encoder que erra
 devagar nao aparece na velocidade lida, mas muda a tensao no papel e o torque.
 Por isso, com torque disponivel, o indicador 'torque' e o principal para deriva.
-O torque dos vizinhos NAO entra na estimativa: uma mudanca de tensao num vao move o
-torque dos dois rolos do vao em sentidos opostos, e o modelo aprenderia a explicar a
-falha como oscilacao normal de tensao. Pela mesma razao, o torque aponta o VAO com
-problema, nao qual dos dois encoders do vao esta errado.
+O torque dos vizinhos NAO entra na estimativa deste indicador: uma mudanca de tensao num
+vao move o torque dos dois rolos do vao em sentidos opostos, e o modelo aprenderia a
+explicar a falha como oscilacao normal de tensao. Este indicador olha um rolo so; QUAL
+encoder falhou sai do padrao de torque nos TRES rolos (residuos estruturados,
+monitor/torque_v2.py): cada encoder errado tem uma assinatura propria, porque a tensao se
+propaga para o vao seguinte. Em simulacao, a isolacao acertou 29/30 derivas (30/30 usando
+tambem a tensao das pontas).
 """
 import json
 
@@ -191,7 +194,7 @@ class MonitorEncoder:
             d = ind["desvio_tq"][i]
             lado = "acima" if d > 0 else "abaixo"
             return (f"{a}: torque {abs(d):.1f} N.m {lado} do esperado para a velocidade "
-                    f"(tensão no papel alterada; verificar o encoder deste rolo e o do rolo vizinho)")
+                    f"(tensão no papel alterada; qual encoder: ver o padrão de torque nos três rolos, torque_v2)")
         return f"{a}: {ind['erros'][i]:.0f} erros de comunicação na última hora (normal até {self.limiar['erros'] - 2:.0f})"
 
     # ------------------------------------------------------------ exportar
