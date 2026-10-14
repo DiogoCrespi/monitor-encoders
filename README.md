@@ -2,6 +2,8 @@
 
 Detecção de degradação de encoders de velocidade numa linha de papel, treinada só com operação normal. Não é preciso histórico de falhas.
 
+Relatório técnico completo (ABNT): `Relatorio-tecnico-ABNT-monitor-encoders.pdf`.
+
 ## Método
 
 Quatro indicadores sobre o encoder monitorado:
