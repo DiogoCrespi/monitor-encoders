@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from monitor import avisos
 from monitor.avisos import (MonitorAvisos, RegraAtual, arl_cusum_poisson, contadores_para_eventos,
                             familia, limiar_para_arl, validar_eventos)
 from poc.simulador_avisos import CENARIOS, ENCODERS, contadores, eventos_do_log, simular
@@ -191,3 +192,18 @@ def test_simulador_e_reprodutivel_e_coerente():
     for _, g in c.groupby("encoder"):
         assert np.all(np.diff(g["valor"].to_numpy()) >= 0)
     assert c["valor"].max() >= len(a)                  # contador >= alarmes registrados
+
+
+def test_configurar_codigos_troca_a_tabela():
+    original = dict(avisos.CODIGOS)
+    try:
+        avisos.configurar_codigos({"X1": "cabo", "X2": "sinal"}, {"X1": "codigo de teste"})
+        assert familia("X1") == "cabo" and familia("X2") == "sinal"
+        assert familia(next(iter(original))) is None            # a tabela antiga saiu
+        assert avisos.DESCRICAO["X1"] == "codigo de teste"
+        with pytest.raises(ValueError, match="familia"):
+            avisos.configurar_codigos({"X3": "outra"})
+    finally:
+        avisos.configurar_codigos(original)
+        avisos.DESCRICAO.pop("X1", None)
+    assert avisos.CODIGOS == original

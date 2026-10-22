@@ -30,8 +30,14 @@ mesmo encoder nas ultimas `janela_corrob_min`; 'baixa' quando varios encoders al
 nos avisos (provavel causa comum: EMC, alimentacao, rede) - nao e defeito de um encoder.
 Os modelos continuam independentes: a correlacao so muda a severidade e a mensagem, nunca
 apaga nem cria alarme.
+
+A correlacao compara ROLOS. Os Modelos 2 e 3 ja falam em rolo; o Modelo 1 fala no nome do
+encoder do log de avisos, traduzido por `mapa_encoders` ({encoder do log: rolo}; o padrao e o
+proprio nome). Se nenhum encoder do log casar com um rolo, a corroboracao fica desligada e o
+treino dos avisos emite um aviso (warnings).
 """
 import json
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -52,9 +58,11 @@ PARAM_PROXIMO = {}                                                          # pa
 
 class MonitorConjunto:
     def __init__(self, rolos=ROLOS, fs=10, usar_tensao_pontas=None, janela_corrob_min=120.0,
-                 param_avisos=None, param_torque=None, param_proximo=None):
-        """usar_tensao_pontas: None = usa se as colunas tensao_entrada/tensao_saida existirem no treino."""
+                 param_avisos=None, param_torque=None, param_proximo=None, mapa_encoders=None):
+        """usar_tensao_pontas: None = usa se as colunas tensao_entrada/tensao_saida existirem no treino.
+        mapa_encoders: {encoder no log de avisos: rolo}; quem nao estiver no mapa usa o proprio nome."""
         self.rolos, self.fs = tuple(rolos), fs
+        self.mapa_encoders = dict(mapa_encoders or {})
         self.usar_tensao = usar_tensao_pontas
         self.janela_corrob_s = janela_corrob_min * 60.0
         self.param_avisos = {**PARAM_AVISOS, **(param_avisos or {})}
@@ -72,6 +80,19 @@ class MonitorConjunto:
     def _serie(self, df, rolo):
         return de_dataframe(df, rolo, self._vizinhos(rolo))
 
+    def rolo_do_encoder(self, encoder):
+        return self.mapa_encoders.get(encoder, encoder)
+
+    def _conferir_mapa(self):
+        """Avisa quando nenhum encoder do Modelo 1 corresponde a um rolo (corroboracao desligada)."""
+        if self.avisos is None:
+            return
+        encs = sorted({e for e, _ in self.avisos.canais})
+        if encs and not {self.rolo_do_encoder(e) for e in encs} & set(self.rolos):
+            warnings.warn(f"nenhum encoder do log de avisos {encs} corresponde aos rolos {list(self.rolos)}: "
+                          "a corroboracao entre o Modelo 1 e os Modelos 2/3 fica desligada. Informe "
+                          "mapa_encoders={encoder: rolo}.", stacklevel=3)
+
     @property
     def componentes(self):
         return {"avisos": self.avisos is not None, "torque": self.torque is not None,
@@ -87,9 +108,9 @@ class MonitorConjunto:
             tensao = all({"tensao_entrada", "tensao_saida"} <= set(d.columns) for d in dfs)
             usar = tensao if self.usar_tensao is None else bool(self.usar_tensao)
             self.torque = MonitorTorqueV2(fs=self.fs, usar_tensao_pontas=usar, **self.param_torque).treinar(dfs)
-        base = pd.concat(dfs, ignore_index=True)
-        for r in self.rolos:
-            self.proximo[r] = ProximoPassoV2(fs=self.fs, **self.param_proximo).treinar(*self._serie(base, r))
+        for r in self.rolos:                          # trechos separados: os atrasos nao cruzam a juncao
+            self.proximo[r] = ProximoPassoV2(fs=self.fs, **self.param_proximo).treinar_trechos(
+                [self._serie(d, r) for d in dfs])
         if eventos is not None:
             self.treinar_avisos(eventos, duracao_eventos_s, encoders, contadores)
         return self
@@ -99,6 +120,7 @@ class MonitorConjunto:
         if duracao_s is None:
             raise ValueError("informe a duracao do historico normal de avisos (s)")
         self.avisos = MonitorAvisos(**self.param_avisos).treinar(eventos, duracao_s, encoders, contadores)
+        self._conferir_mapa()
         return self
 
     def calibrar(self, dfs):
@@ -164,7 +186,9 @@ class MonitorConjunto:
         R = rolo.upper()
         if nome == "contagem":
             tipo = "picos"
-            msg = (f"{R}: {valor:.0f} picos no sinal do encoder em {W:.0f} min (normal: nenhum). Quedas "
+            lim = m.limiar[nome]                       # alarma com contagem > lim
+            normal = "nenhum" if lim < 1 else f"até {lim:.0f}"
+            msg = (f"{R}: {valor:.0f} picos no sinal do encoder em {W:.0f} min (normal: {normal}). Quedas "
                    f"curtas de leitura ou perda de pulsos. Ação: verificar conector, cabo e fixação do "
                    f"encoder do {R}.")
         else:
@@ -180,12 +204,14 @@ class MonitorConjunto:
             sev = "baixa"
         elif "falha(s) transitoria" in a["mensagem"]:
             sev = "alta"
-        return self._evento(a["t_s"], "avisos", a["encoder"], a["encoder"], a["familia"], sev, a["mensagem"], a)
+        rolo = self.rolo_do_encoder(a["encoder"])     # nome do log -> rolo (para a corroboracao)
+        return self._evento(a["t_s"], "avisos", rolo, rolo, a["familia"], sev, a["mensagem"], a)
 
     @staticmethod
     def correlacionar(eventos, janela_s):
         """Sobe para 'alta' o evento cujo encoder ja foi apontado por OUTRO modelo nos ultimos janela_s.
-        Nao corrobora evento de causa comum (severidade 'baixa') nem causa mecanica (encoder None)."""
+        Nao corrobora evento de causa comum (severidade 'baixa') nem causa mecanica (encoder None).
+        Os nomes comparados sao os de rolo (eventos do Modelo 1 ja traduzidos por mapa_encoders)."""
         for i, e in enumerate(eventos):
             if e["encoder"] is None or e["severidade"] == "baixa":
                 continue
@@ -204,6 +230,7 @@ class MonitorConjunto:
     # ------------------------------------------------------------ exportar
     def exportar(self):
         return {"rolos": list(self.rolos), "fs": self.fs, "janela_corrob_min": self.janela_corrob_s / 60,
+                "mapa_encoders": self.mapa_encoders,
                 "avisos": None if self.avisos is None else self.avisos.exportar(),
                 "torque": None if self.torque is None else self.torque.exportar(),
                 "proximo_passo": {r: json.loads(m.exportar()) for r, m in self.proximo.items()}}
@@ -212,7 +239,8 @@ class MonitorConjunto:
     def carregar(cls, dados):
         if isinstance(dados, str):
             dados = json.loads(dados)
-        m = cls(rolos=dados["rolos"], fs=dados["fs"], janela_corrob_min=dados["janela_corrob_min"])
+        m = cls(rolos=dados["rolos"], fs=dados["fs"], janela_corrob_min=dados["janela_corrob_min"],
+                mapa_encoders=dados.get("mapa_encoders"))
         m.avisos = None if dados["avisos"] is None else MonitorAvisos.carregar(dados["avisos"])
         m.torque = None if dados["torque"] is None else MonitorTorqueV2.carregar(dados["torque"])
         m.proximo = {r: ProximoPassoV2.carregar(json.dumps(d)) for r, d in dados["proximo_passo"].items()}

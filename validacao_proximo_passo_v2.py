@@ -2,10 +2,12 @@
 Validacao do Modelo 3 v2 ("prever o proximo passo": ARX + branqueamento + limite por meta de FA).
 
 Etapas (cada uma grava uma secao em validacao_proximo_passo_v2.md):
-  python validacao_proximo_passo_v2.py dev     # escolhe estatistica/parametros (so desenvolvimento)
-  python validacao_proximo_passo_v2.py teste   # mede UMA vez, configuracao congelada (CONFIG_FINAL)
-  python validacao_proximo_passo_v2.py bases   # SKAB (protocolo oficial) e PMSM
-  python validacao_proximo_passo_v2.py iforest # Isolation Forest com as features do modelo (comparacao)
+  python validacao_proximo_passo_v2.py dev        # cada estatistica sozinha (so desenvolvimento)
+  python validacao_proximo_passo_v2.py dev-final  # configuracao escolhida (CONFIG_FINAL) nas sementes de
+                                                  # desenvolvimento, com a comparacao Isolation Forest
+  python validacao_proximo_passo_v2.py teste      # mede UMA vez, configuracao congelada (CONFIG_FINAL),
+                                                  # tambem com a comparacao Isolation Forest
+  python validacao_proximo_passo_v2.py bases      # SKAB (protocolo oficial) e PMSM
 
 Separacao das sementes (duas simulacoes: poc_deteccao.simular SEM malha e malha_fechada.simular_mf COM malha):
   treino               semente 1 (8 h normal)

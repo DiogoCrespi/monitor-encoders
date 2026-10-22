@@ -29,6 +29,8 @@ import numpy as np
 import pandas as pd
 from scipy.signal import lfilter
 
+from . import SP_AQUECIMENTO, V_MIN_REGIME
+
 ROLOS = ("festoon", "pb1", "pb2")
 _ENC = {"festoon": (1.0, 0.0, -1.0), "pb1": (-1.0, 1.0, 0.0), "pb2": (0.0, -1.0, 1.0)}
 HIPOTESES = [("encoder", r) for r in ROLOS] + [("mecanica", r) for r in ROLOS]
@@ -53,7 +55,7 @@ def matriz_assinaturas():
 
 class MonitorTorqueV2:
     def __init__(self, fs=10, k=0.5, h=None, media_s=60, persist_s=60, holdoff_min=10.0,
-                 ordem_ar=0, lags_acel=5, janela_s=30.0, v_min=200.0, estatistica="cusum",
+                 ordem_ar=0, lags_acel=5, janela_s=30.0, v_min=V_MIN_REGIME, estatistica="cusum",
                  lam=0.1, usar_tensao_pontas=False, hipoteses_mecanicas=True,
                  meta_fa_semana=1.0, bloco_h=1.0, semanas_boot=40, seed_boot=0):
         self.fs, self.k, self.h, self.media_s = fs, k, h, int(media_s)
@@ -80,7 +82,7 @@ class MonitorTorqueV2:
         sp = df["v_setpoint"].to_numpy(float)
         v = df[f"v_{rolo}"].to_numpy(float) / 60.0
         a = np.gradient(v) * self.fs
-        rod = (sp > 30).astype(float)
+        rod = (sp > SP_AQUECIMENTO).astype(float)          # motor girando (aquece o redutor)
         cols = [sp / 600, v, v ** 2, a] + [_atraso(a, i) for i in range(1, self.lags + 1)]
         for tau_min in (15, 45):
             cols.append(_ewma(rod, 1 - np.exp(-1 / (self.fs * 60 * tau_min))))
@@ -152,8 +154,6 @@ class MonitorTorqueV2:
         E, val = self._branquear(R, inicio)
         self.sigma_e = E[val].std(axis=0)
         self.S = np.corrcoef((E[val] / self.sigma_e).T)
-        self.sigma_r = R.std(axis=0)
-        self.acf1 = [float(np.corrcoef(E[val][1:, c], E[val][:-1, c])[0, 1]) for c in range(3)]
         self._montar_filtro()
         return self
 
@@ -216,6 +216,12 @@ class MonitorTorqueV2:
         dfs = [dfs] if isinstance(dfs, pd.DataFrame) else list(dfs)
         Zs = [self._z(d)[0] for d in dfs]
         Z = np.vstack(Zs)
+        if len(Z) <= self.bloco:
+            # a reamostragem sorteia blocos de bloco_h horas de regime: precisa de mais de um bloco
+            raise ValueError(
+                f"calibracao curta demais: {len(Z) * self.media_s / 3600:.2f} h em regime (setpoint >= "
+                f"{self.v_min:.0f} e estavel); o minimo e mais de {self.bloco * self.media_s / 3600:.2f} h "
+                f"(bloco_h). Junte mais trechos normais ou reduza bloco_h.")
         horas_cal = sum(len(d) for d in dfs) / self.fs / 3600
         self.horas_regime_semana = 168 * len(Z) * self.media_s / 3600 / horas_cal
         n_sem = int(self.horas_regime_semana * 3600 / self.media_s)
@@ -233,7 +239,6 @@ class MonitorTorqueV2:
             lo, hi = (mid, hi) if taxa(mid) > self.meta else (lo, mid)
         self.h = float(hi)
         self.fa_boot_semana = taxa(self.h)
-        self.max_cal = float(max(self._passo(np.hstack([z, -z]), np.zeros(2 * z.shape[1])).max() for z in Zs))
         return self
 
     # ------------------------------------------------------------ uso

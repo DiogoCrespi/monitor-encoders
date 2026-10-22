@@ -146,3 +146,10 @@ def test_formato_invalido_e_rejeitado(monitor):
     with pytest.raises(ValueError, match="tq_pb2"):
         monitor.analisar(pd.DataFrame({"t_s": [0.0], "v_setpoint": [0.0], "v_festoon": [0.0], "v_pb1": [0.0],
                                        "v_pb2": [0.0], "tq_festoon": [0.0], "tq_pb1": [0.0]}))
+
+
+def test_calibracao_curta_demais_da_erro_claro():
+    """A reamostragem sorteia blocos de bloco_h horas de regime: com menos que isso, erro explicito."""
+    m = MonitorTorqueV2(bloco_h=2.0, semanas_boot=2).treinar(simular_mf2(3, seed=14))
+    with pytest.raises(ValueError, match="calibracao curta demais"):
+        m.calibrar(simular_mf2(1, seed=15))

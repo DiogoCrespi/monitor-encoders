@@ -204,7 +204,7 @@ class DetectorContador:
         return self
 
     def alarmes(self, df):
-        return eventos(self.soma_1h(df) >= self.limiar, 1)
+        return eventos(self.soma_1h(df) > self.limiar, 1)          # como monitor.py: > (maximo + 2)
 
 
 def eventos(flag, persist):

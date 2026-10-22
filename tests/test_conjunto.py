@@ -6,14 +6,16 @@ ficam para validacao_conjunta.py. Modelo 3 com ordem fixa e Modelo 2 com menos s
 reamostragem, so para o teste rodar rapido.
 """
 import json
+import warnings
 
+import numpy as np
 import pytest
 
 from monitor import MonitorConjunto, MonitorEncoder
 from monitor.conjunto import MODELOS, SEVERIDADES
 from poc.malha_fechada import simular_mf
 from poc.malha_fechada_v2 import simular_mf2
-from poc.simulador_avisos import ENCODERS_LINHA, simular_acoplado
+from poc.simulador_avisos import ENCODERS, ENCODERS_LINHA, contadores, eventos_do_log, simular, simular_acoplado
 
 FS = 10
 RAPIDO = dict(param_torque={"semanas_boot": 15}, param_proximo={"ordem": (16, 3), "r_max": 10, "n_rep": 5})
@@ -127,3 +129,33 @@ def test_exportar_e_carregar_reproduz_eventos(monitor):
     b = copia.analisar(df, ev, cont)
     assert [(e["t_s"], e["modelo"], e["encoder"], e["severidade"]) for e in a] == \
            [(e["t_s"], e["modelo"], e["encoder"], e["severidade"]) for e in b]
+
+
+def test_mapa_encoder_rolo_e_aviso_quando_nenhum_nome_casa():
+    """Log de avisos com nomes de encoder que nao sao nomes de rolo: sem mapa, aviso; com mapa, corrobora."""
+    df, info = simular(36, None, dias_hist=7.0, dias_monit=1.0)          # ENCODERS: nomes genericos
+    ev, cont = eventos_do_log(df), contadores(df, 60.0, info["t_fim_s"])
+    th = info["t_fim_hist_s"]
+    hist = (ev[ev["t_s"] < th], th, ENCODERS, cont[cont["t_s"] < th])
+    with pytest.warns(UserWarning, match="mapa_encoders"):
+        MonitorConjunto().treinar_avisos(*hist)
+    enc = list(ENCODERS)[0]
+    m = MonitorConjunto(mapa_encoders={enc: "pb1"})
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        m.treinar_avisos(*hist)
+    e = m._de_avisos({"t_s": 0.0, "encoder": enc, "familia": "cabo", "mensagem": "x", "causa_comum": False})
+    assert e["encoder"] == e["rolo"] == "pb1" and e["origem"]["encoder"] == enc
+    out = MonitorConjunto.correlacionar([e, _ev(600, "torque", "pb1")], 7200)
+    assert out[1]["corroborado_por"] == ["avisos"] and out[1]["severidade"] == "alta"
+    copia = MonitorConjunto.carregar(json.dumps(m.exportar()))
+    assert copia.mapa_encoders == {enc: "pb1"}
+
+
+def test_mensagem_de_picos_usa_o_normal_calibrado(monitor):
+    m = monitor.proximo["pb1"]
+    lim = m.limiar["contagem"]
+    e = monitor._de_proximo("pb1", m, {"contagem": np.array([lim + 2])}, np.array([0]),
+                            {"indice": 0, "estatistica": "contagem"}, np.array([0.0]))
+    normal = "nenhum" if lim < 1 else f"até {lim:.0f}"
+    assert f"(normal: {normal})" in e["mensagem"] and e["tipo"] == "picos"

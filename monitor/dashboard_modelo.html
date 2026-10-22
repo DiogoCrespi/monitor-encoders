@@ -52,6 +52,12 @@ th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--bord
 th { color: var(--muted); font-weight: 600; white-space: nowrap; }
 .tag { display: inline-block; font-size: .75rem; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--border); white-space: nowrap; }
 .tag.falso { color: var(--alarme); border-color: var(--alarme); }
+.tag.alta { color: #fff; background: var(--alarme); border-color: var(--alarme); }
+.tag.media { color: var(--limiar); border-color: var(--limiar); }
+.tag.baixa { color: var(--muted); }
+.tag.certa { color: var(--ok); border-color: var(--ok); }
+.tag.errada { color: var(--alarme); border-color: var(--alarme); }
+td.msg { min-width: 320px; }
 .como { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
 .como p { margin: 4px 0 0; color: var(--muted); font-size: .88rem; }
 details pre { overflow-x: auto; font-size: .75rem; background: var(--tab); padding: 12px; border-radius: 8px; }
@@ -63,23 +69,23 @@ details pre { overflow-x: auto; font-size: .75rem; background: var(--tab); paddi
 <body>
 <main>
   <button class="tema" id="tema" type="button">tema</button>
-  <h1>Monitor de saúde de encoders — protótipo</h1>
-  <p class="sub">Linha de papel com 3 encoders (Festoon, P&amp;B1, P&amp;B2) · monitorando o <b>P&amp;B1</b> ·
-    dados <b>simulados</b> a 10 Hz · treino só com operação normal ·
-    <b>simulação sem malha fechada</b>: na máquina, a deriva lenta só aparece no torque</p>
+  <h1>Monitor de saúde de encoders — protótipo (modelos v2)</h1>
+  <p class="sub">Linha de papel com 3 rolos (Festoon, P&amp;B1, P&amp;B2) · <b>monitor conjunto</b> com os três modelos v2 ·
+    dados <b>simulados</b> em malha fechada a 10 Hz, com log de avisos do drive acoplado · treino só com operação normal ·
+    números de demonstração (os validados estão na seção Validação)</p>
 
   <div class="tabs" id="tabs" role="tablist"></div>
   <div class="kpis" id="kpis"></div>
 
   <div class="card">
     <div class="legenda">
-      <span><i style="background:var(--serie)"></i>sinal / indicador</span>
-      <span><i style="background:var(--limiar)"></i>linha de corte</span>
+      <span><i style="background:var(--serie)"></i>sinal / estatística</span>
+      <span><i style="background:var(--limiar)"></i>limite (meta de 1 falso alarme por semana)</span>
       <span><i style="background:var(--alarme)"></i>alarme</span>
-      <span><i style="background:var(--falha);height:10px"></i>falha injetada (começa em 1 h, chega a 100% em 3 h)</span>
+      <span><i style="background:var(--falha);height:10px"></i>falha injetada (começa em 1 h; rampa de 4 h)</span>
     </div>
     <div id="graficos"></div>
-    <p class="aviso" id="leitura">Passe o mouse (ou toque) nos gráficos para ler os valores.</p>
+    <p class="aviso" id="leitura">Passe o mouse (ou toque) nos gráficos para ler os valores. As estatísticas ficam congeladas fora do regime (parada, rampa, emenda).</p>
   </div>
 
   <h2>Alarmes gerados</h2>
@@ -87,18 +93,19 @@ details pre { overflow-x: auto; font-size: .75rem; background: var(--tab); paddi
 
   <h2>Como funciona</h2>
   <div class="como">
-    <div class="card"><b>1 · Vizinhos</b><p>Todos os encoders puxam o mesmo papel. O P&amp;B1 é estimado a partir do Festoon, do P&amp;B2 e do setpoint; se ele diverge, algo está errado com ele. Pega deriva lenta e perda de pulsos.</p></div>
-    <div class="card"><b>2 · Próprio sinal</b><p>Um preditor do próximo valor do P&amp;B1. Olha o tamanho do erro de previsão; pega picos e ruído.</p></div>
-    <div class="card"><b>3 · Erros de comunicação</b><p>Contadores de erro de comunicação do drive. Cabo ou conector degradando aparece aqui antes de parar a máquina.</p></div>
-    <div class="card"><b>Linha de corte</b><p>Maior valor visto em 8 h normais + 10%. Alarme só se passar por 2 s seguidos.</p></div>
+    <div class="card"><b>Modelo 1 · Avisos do drive</b><p>Cada aviso ou falha do histórico do drive (cabo/comunicação ou sinal do encoder) vira um incidente. CUSUM de Poisson por encoder e família, com a taxa normal do histórico e o limite pela meta de falso alarme (ARL por cadeia de Markov). Pega cabo, conector e sinal degradando.</p></div>
+    <div class="card"><b>Modelo 2 · Torque esperado × real</b><p>Em malha fechada o drive corrige a velocidade lida: um erro lento some da velocidade e aparece no torque. Regressão do torque dos três rolos e resíduos estruturados: cada encoder tem uma assinatura nos três torques; atrito muda só o próprio rolo. Diz <b>qual</b> encoder, ou se é mecânica.</p></div>
+    <div class="card"><b>Modelo 3 · Próximo passo</b><p>Preditor ARX do próprio sinal com o setpoint, resíduo branqueado. Alarme pela variância do erro de previsão em 5 min ou pela contagem de picos em 10 min. Pega picos, perda de pulsos e ruído.</p></div>
+    <div class="card"><b>Severidade e corroboração</b><p><b>alta</b>: isolação do torque confirmada (maioria de 3 alarmes), falha transitória já registrada pelo drive ou outro modelo apontando o mesmo rolo nas últimas 2 h. <b>baixa</b>: vários encoders avisando juntos (provável causa comum). Os modelos são independentes: a correlação só muda severidade e mensagem.</p></div>
   </div>
+  <p class="aviso">Limitação: as assinaturas do Modelo 2 vêm das mesmas equações do simulador, então a isolação aqui mede a coerência simulador ↔ modelo, não o desempenho na máquina. "Deriva de escala" é raio efetivo/escorregamento do rolo (anomalia mecânica/geométrica), não defeito interno de encoder incremental.</p>
 
   <h2>Validação</h2>
   <div class="card"><!--__VALIDACAO__--></div>
 
   <h2>Modelo exportado</h2>
   <div class="card">
-    <details><summary>Coeficientes (JSON) — só somas e multiplicações, roda em CLP ou microcontrolador</summary>
+    <details><summary>Parâmetros do monitor conjunto (JSON) — para aplicar bastam somas, multiplicações e comparações</summary>
       <pre><!--__MODELO__--></pre></details>
   </div>
 </main>
@@ -106,16 +113,20 @@ details pre { overflow-x: auto; font-size: .75rem; background: var(--tab); paddi
 <script>
 const DADOS = /*__DADOS__*/null;
 const F0 = 60;
-const NOMES = { vizinhos: "Vizinhos", proprio: "Próprio sinal", erros: "Erros de comunicação" };
+const NOMES = { avisos: "Modelo 1 · avisos", torque: "Modelo 2 · torque", proximo_passo: "Modelo 3 · próximo passo" };
+const ROLO = { festoon: "Festoon", pb1: "P&B1", pb2: "P&B2" };
 const GRAFICOS = [
-  { chave: "velocidade", titulo: "Velocidade lida no P&B1", unid: "m/min" },
-  { chave: "vizinhos", titulo: "Indicador 1 · desvio em relação aos vizinhos", unid: "", limiar: "vizinhos" },
-  { chave: "proprio", titulo: "Indicador 2 · erro de previsão do próprio sinal", unid: "", limiar: "proprio" },
-  { chave: "erros", titulo: "Indicador 3 · erros de comunicação na última hora", unid: "", limiar: "erros" },
+  { chave: "velocidade", titulo: r => `Velocidade lida no ${ROLO[r]}`, unid: "m/min" },
+  { chave: "torque", titulo: r => "Modelo 2 · CUSUM do torque (maior hipótese, três rolos)", unid: "" },
+  { chave: "var_jan", titulo: r => `Modelo 3 · variância do erro de previsão em 5 min (${ROLO[r]})`, unid: "" },
+  { chave: "contagem", titulo: r => `Modelo 3 · picos em 10 min (${ROLO[r]})`, unid: "" },
+  { chave: "avisos", titulo: r => `Modelo 1 · CUSUM dos avisos do ${ROLO[r]} (S / limite; 1 = limite)`, unid: "" },
 ];
 let atual = 0, cursor = null;
 
 function cor(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+function nomeRolos(s) { return esc(s).replace(/\bPB1\b/g, "P&amp;B1").replace(/\bPB2\b/g, "P&amp;B2").replace(/\bFESTOON\b/g, "Festoon"); }
 
 function montar() {
   const tabs = document.getElementById("tabs");
@@ -129,7 +140,7 @@ function montar() {
   GRAFICOS.forEach(def => {
     const d = document.createElement("div");
     d.className = "grafico";
-    d.innerHTML = `<div class="tit"><b>${def.titulo.replace("&", "&amp;")}</b><span data-v="${def.chave}"></span></div><canvas data-c="${def.chave}"></canvas>`;
+    d.innerHTML = `<div class="tit"><b data-t="${def.chave}"></b><span data-v="${def.chave}"></span></div><canvas data-c="${def.chave}"></canvas>`;
     g.appendChild(d);
     const cv = d.querySelector("canvas");
     const mover = ev => {
@@ -156,28 +167,33 @@ function kpis(c) {
   const durante = c.eventos.filter(e => e.fase === "durante a falha");
   const falsos = c.eventos.filter(e => e.fase !== "durante a falha");
   const p = durante[0];
+  const maxSev = ["alta", "media", "baixa"].find(s => durante.some(e => e.severidade === s));
   const itens = c.falha ? [
-    ["Falha injetada", "começa em 60 min", ""],
+    ["Falha injetada", `${ROLO[c.rolo]} · começa em 60 min`, ""],
     ["Primeiro alarme", p ? `${(p.t_min - F0).toFixed(0)} min após o início` : "não detectou", p ? "ok" : "ruim"],
-    ["Quem detectou", p ? NOMES[p.indicador] : "—", ""],
-    ["Severidade no alarme", p ? `${Math.round(p.severidade * 100)}%` : "—", p && p.severidade < 0.5 ? "ok" : "ruim"],
-    ["Falsos alarmes antes", String(falsos.length), falsos.length ? "ruim" : "ok"],
+    ["Quem detectou primeiro", p ? NOMES[p.modelo] : "—", ""],
+    ["Isolação do 1º alarme", p ? p.isolacao : "—", p ? (p.isolacao === "certa" ? "ok" : "ruim") : ""],
+    ["Maior severidade", maxSev || "—", ""],
+    ["Falsos alarmes", String(falsos.length), falsos.length ? "ruim" : "ok"],
   ] : [
     ["Período", "6 h de produção", ""],
     ["Falsos alarmes", String(falsos.length), falsos.length ? "ruim" : "ok"],
     ["Paradas, rampas, emendas", "incluídas", ""],
   ];
   document.getElementById("kpis").innerHTML = itens.map(([r, v, k]) =>
-    `<div class="card kpi"><div class="rot">${r}</div><div class="val ${k}">${v}</div></div>`).join("");
+    `<div class="card kpi"><div class="rot">${r}</div><div class="val ${k}">${esc(v)}</div></div>`).join("");
 }
 
 function tabela(c) {
   const t = document.getElementById("eventos");
   if (!c.eventos.length) { t.innerHTML = "<tr><td>Nenhum alarme neste cenário.</td></tr>"; return; }
-  t.innerHTML = "<thead><tr><th>Tempo</th><th>Indicador</th><th>Mensagem</th><th>Severidade</th><th></th></tr></thead><tbody>" +
-    c.eventos.map(e => `<tr><td>${e.t_min.toFixed(1)} min</td><td>${NOMES[e.indicador]}</td><td>${e.mensagem.replace("PB1", "P&amp;B1")}</td>` +
-      `<td>${c.falha ? Math.round(e.severidade * 100) + "%" : "—"}</td>` +
-      `<td>${e.fase === "durante a falha" ? "" : '<span class="tag falso">falso alarme</span>'}</td></tr>`).join("") + "</tbody>";
+  t.innerHTML = "<thead><tr><th>Tempo</th><th>Modelo</th><th>Rolo · tipo</th><th>Severidade</th><th>Isolação</th><th>Falha</th><th>Mensagem</th></tr></thead><tbody>" +
+    c.eventos.map(e => `<tr><td>${e.t_min.toFixed(1)} min</td><td>${NOMES[e.modelo]}</td>` +
+      `<td>${esc(ROLO[e.rolo] || e.rolo)} · ${esc(e.tipo)}</td>` +
+      `<td><span class="tag ${e.severidade}">${e.severidade}</span>${e.corroborado.length ? " <span class='tag'>corroborado</span>" : ""}</td>` +
+      `<td>${e.fase === "durante a falha" ? `<span class="tag ${e.isolacao}">${e.isolacao}</span>` : '<span class="tag falso">falso alarme</span>'}</td>` +
+      `<td>${e.falha_pct === null ? "—" : Math.round(e.falha_pct * 100) + "%"}</td>` +
+      `<td class="msg">${nomeRolos(e.mensagem)}</td></tr>`).join("") + "</tbody>";
 }
 
 function grafico(cv, def, c) {
@@ -186,9 +202,9 @@ function grafico(cv, def, c) {
   const g = cv.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0, 0, W, H);
   const L = 44, R = 8, T = 8, B = 20, pw = W - L - R, ph = H - T - B;
   const ys = c[def.chave], n = ys.length, tmax = c.t[n - 1];
-  const lim = def.limiar ? DADOS.limiar[def.limiar] : null;
+  const lim = c.limiar[def.chave] !== undefined ? c.limiar[def.chave] : null;
   let ymax = Math.max(...ys);
-  if (lim !== null) ymax = Math.min(Math.max(ymax, lim * 1.3), lim * 5);
+  if (lim !== null) ymax = Math.min(Math.max(ymax, lim * 1.3, 1), Math.max(lim, 1) * 5);
   ymax = ymax > 0 ? ymax * 1.05 : 1;
   const X = t => L + (t / tmax) * pw, Y = v => T + ph - (Math.min(v, ymax) / ymax) * ph;
 
@@ -212,21 +228,22 @@ function grafico(cv, def, c) {
   g.stroke();
 
   g.fillStyle = cor("--alarme");
-  c.eventos.filter(e => e.indicador === def.chave).forEach(e => {
+  c.eventos.filter(e => e.grafico === def.chave).forEach(e => {
     const x = X(e.t_min);
     g.beginPath(); g.moveTo(x, T); g.lineTo(x - 5, T + 8); g.lineTo(x + 5, T + 8); g.closePath(); g.fill();
     g.strokeStyle = cor("--alarme"); g.lineWidth = 1; g.beginPath(); g.moveTo(x, T + 8); g.lineTo(x, T + ph); g.stroke();
   });
 
+  document.querySelector(`[data-t="${def.chave}"]`).textContent = def.titulo(c.rolo);
   const span = document.querySelector(`[data-v="${def.chave}"]`);
   if (cursor !== null) {
     const x = X(c.t[cursor]);
     g.strokeStyle = cor("--muted"); g.lineWidth = 1; g.beginPath(); g.moveTo(x, T); g.lineTo(x, T + ph); g.stroke();
     const v = ys[cursor];
-    span.textContent = (def.chave === "erros" ? v.toFixed(0) : v.toFixed(2)) + (def.unid ? " " + def.unid : "") +
-      (lim !== null ? ` · corte ${lim.toFixed(2)}` : "");
+    span.textContent = (def.chave === "contagem" ? v.toFixed(0) : v.toFixed(2)) + (def.unid ? " " + def.unid : "") +
+      (lim !== null ? ` · limite ${lim.toFixed(2)}` : "");
   } else {
-    span.textContent = lim !== null ? `linha de corte ${lim.toFixed(2)}` : "";
+    span.textContent = lim !== null ? `limite ${lim.toFixed(2)}` : "";
   }
 }
 
@@ -237,8 +254,7 @@ function desenharTudo() {
   GRAFICOS.forEach(def => grafico(document.querySelector(`[data-c="${def.chave}"]`), def, c));
   const leitura = document.getElementById("leitura");
   if (cursor !== null) {
-    const sev = c.falha ? ` · severidade da falha ${Math.round(c.severidade[cursor] * 100)}%` : "";
-    leitura.textContent = `t = ${c.t[cursor].toFixed(1)} min${sev}. Valores acima do topo do gráfico ficam cortados.`;
+    leitura.textContent = `t = ${c.t[cursor].toFixed(1)} min. Valores acima do topo do gráfico ficam cortados.`;
   }
 }
 

@@ -7,7 +7,7 @@ Usa sementes de DESENVOLVIMENTO (1-40); as de teste (91-95, 101-110) ficam para 
 import numpy as np
 import pytest
 
-from monitor.proximo_passo_v2 import (ProximoPassoV2, cauda_exponencial, de_dataframe, est_cusum_sq,
+from monitor.proximo_passo_v2 import (ProximoPassoV2, juntar_trechos, cauda_exponencial, de_dataframe, est_cusum_sq,
                                       est_contagem, est_kurt_jan, est_var_jan, eventos, limiar_contagem,
                                       ljung_box, portao)
 from poc.malha_fechada import simular_mf
@@ -107,3 +107,31 @@ def test_exportar_e_carregar_reproduz(modelo_mf):
     serie = de_dataframe(simular_mf(6, seed=13, falha="perda_pulsos"))
     copia = ProximoPassoV2.carregar(modelo_mf.exportar())
     assert copia.analisar(*serie)[2] == modelo_mf.analisar(*serie)[2]
+
+
+def test_treino_em_trechos_fecha_o_portao_na_juncao():
+    a, b = de_dataframe(simular_mf(2, seed=4)), de_dataframe(simular_mf(2, seed=5))
+    y, sp, rod = juntar_trechos([a, b], 61)
+    n = len(a[0])
+    assert len(y) == len(sp) == n + len(b[0])
+    assert (rod[:n] == a[2]).all() and not rod[n:n + 61].any() and (rod[n + 61:] == b[2][61:]).all()
+    m1 = ProximoPassoV2(ordem=(5, 1), r_max=3).treinar(*a)
+    m2 = ProximoPassoV2(ordem=(5, 1), r_max=3).treinar_trechos([a])      # um trecho = treino normal
+    np.testing.assert_allclose(m1.coef, m2.coef)
+    np.testing.assert_allclose(m1.phi, m2.phi)
+
+
+def test_branqueamento_nao_atravessa_o_portao_fechado(modelo_mf):
+    """Depois de o portao fechar e reabrir, z so depende do trecho novo (sem transiente da emenda)."""
+    y, sp, rod = de_dataframe(simular_mf(2, seed=6))
+    k = len(y) // 2
+    rod = rod.copy()
+    rod[k:k + 600] = False                                 # 60 s fora do portao
+    z1, idx1 = modelo_mf.z(y, sp, rod)
+    y2 = y.copy()
+    y2[:k] += 50.0                                         # muda so o trecho anterior
+    z2, idx2 = modelo_mf.z(y2, sp, rod)
+    depois = idx1 >= k + 600
+    assert depois.any() and (idx1 == idx2).all()
+    np.testing.assert_allclose(z1[depois], z2[depois])
+    assert not np.allclose(z1[~depois], z2[~depois])

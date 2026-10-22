@@ -19,7 +19,6 @@ import numpy as np
 import pandas as pd
 
 from monitor import MonitorEncoder, de_simulacao
-from monitor.monitor import _atraso
 from poc.poc_deteccao import simular
 
 FS = 10

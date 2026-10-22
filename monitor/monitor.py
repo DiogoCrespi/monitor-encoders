@@ -34,7 +34,7 @@ import numpy as np
 import pandas as pd
 from scipy.signal import lfilter
 
-V_RODANDO = 50.0      # m/min
+from . import V_RODANDO   # m/min, media dos vizinhos (ver monitor/__init__.py)
 LAGS_VIZ = 3
 LAGS_AR = 5
 LAGS_TQ = 2
@@ -225,7 +225,8 @@ class MonitorEncoder:
 def de_simulacao(df_sim):
     """Converte a saida de poc.poc_deteccao.simular para o formato de dados do monitor."""
     out = pd.DataFrame({"t_s": df_sim["t_s"], "v_setpoint": df_sim["setpoint"]})
-    for e in ("festoon", "pb1", "pb2"):
+    for e in [r for r in ("festoon", "pb1", "pb2") if r in df_sim.columns]:
         out[f"v_{e}"] = df_sim[e]
-    out["erros_pb1"] = df_sim["pb1_erros_com"].cumsum()
+        if f"{e}_erros_com" in df_sim.columns:            # contador acumulado de cada rolo que o tiver
+            out[f"erros_{e}"] = df_sim[f"{e}_erros_com"].cumsum()
     return out

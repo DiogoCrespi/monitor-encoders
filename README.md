@@ -113,10 +113,16 @@ Comparações adicionais (`comparacoes.py`):
 
 ## Uso
 
-Requisitos: `numpy pandas scipy scikit-learn pytest tabulate`.
+Requisitos: Python 3 com `numpy pandas scipy scikit-learn pytest tabulate` (versões mínimas em `requirements.txt`):
 
 ```
-python -m pytest -q                       # 74 testes
+pip install -r requirements.txt
+```
+
+Os scripts `validacao*.py` e `comparacoes.py` gravam arquivos `.md` de resultado; para só conferir o código, use o pytest.
+
+```
+python -m pytest -q                       # 80 testes (~2 min)
 python poc/poc_deteccao.py
 python validacao.py
 python validacao_malha_fechada.py
@@ -125,7 +131,7 @@ python validacao_avisos.py
 python validacao_torque_v2.py
 python validacao_proximo_passo_v2.py teste
 python validacao_conjunta.py teste
-python -m monitor.gerar_dashboard
+python -m monitor.gerar_dashboard         # dashboard do monitor conjunto (~2 min)
 ```
 
 Bases públicas, antes de `bases/testar_skab.py` e `bases/testar_pmsm.py`:
@@ -156,3 +162,7 @@ mc.calibrar([df_normal_3, df_normal_4])
 for e in mc.analisar(df, eventos=avisos):
     print(e["t_s"], e["modelo"], e["encoder"], e["severidade"], e["mensagem"])
 ```
+
+A corroboração entre modelos compara rolos. Se o log de avisos usa outros nomes de encoder, passe `MonitorConjunto(mapa_encoders={"eixo_3": "pb1", ...})`; sem nenhum nome casando, o treino dos avisos emite um aviso.
+
+Dashboard (`dashboard/monitor-encoders.html`, gerado por `monitor/gerar_dashboard.py`): o monitor conjunto com os três modelos v2 no simulador v2 com avisos acoplados, alarmes com severidade e isolação. Abre offline no navegador.

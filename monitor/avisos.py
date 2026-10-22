@@ -253,7 +253,6 @@ class MonitorAvisos:
                 cache[chave] = limiar_para_arl(mu0, k, arl_alvo_s / self.bin_s)
             c.update(mu0=float(mu0), k=float(k), h=float(cache[chave]))
         self.canais = canais
-        self.horas_treino = horas
         return self
 
     # -------------------------------------------------------- uso (Fase II)
@@ -302,7 +301,7 @@ class MonitorAvisos:
         extra = ""
         amp = janela.loc[janela["codigo"].isin(list(AMPLITUDE)), "valor"].dropna()
         if len(amp):
-            extra = f"; ultima amplitude {amp.iloc[-1]:.0f} mV (nominal 375-600 mV)"
+            extra = f"; ultima amplitude {amp.iloc[-1]:.0f} mV (faixa nominal a confirmar no manual do drive)"
         falhas = int((janela["tipo"] == "falha").sum())
         if falhas:
             extra += f"; {falhas} falha(s) transitoria(s) nas ultimas 24 h"

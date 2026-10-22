@@ -1,0 +1,8 @@
+# Versoes minimas = as usadas nos testes (Python 3.14; pytest -q passa com elas).
+# Versoes mais antigas podem funcionar, mas nao foram testadas.
+numpy>=2.4.1
+pandas>=3.0.0
+scipy>=1.17.1
+scikit-learn>=1.8.0   # Isolation Forest / Random Forest das comparacoes
+tabulate>=0.10.0      # DataFrame.to_markdown nos scripts de validacao
+pytest>=9.0.2

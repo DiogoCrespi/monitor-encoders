@@ -15,6 +15,9 @@ Diferencas para o indicador 'proprio' de monitor.py (AR(5) + EWMA|erro| + 1,1 x 
 2. Portao de regime: so monitora com a linha rodando e o setpoint parado ha
    'portao_s' segundos (suspende em parada, rampa e emenda). As estatisticas sao
    calculadas so sobre as amostras dentro do portao (o estado "congela" fora dele).
+   O branqueamento roda na serie continua (antes de comprimir no portao): os atrasos do AR
+   nunca ligam o fim de um trecho monitorado ao inicio do seguinte. Varios trechos de treino
+   entram por treinar_trechos(), com o portao fechado em cada juncao.
 3. Estatisticas de alarme sobre z (todas disponiveis, ver ESTATISTICAS):
        ewma_abs   EWMA_lam(|z|)                         (a do indicador atual)
        ewma_sq    EWMA_lam(z^2)                         (variancia -> ruido)
@@ -40,6 +43,8 @@ import json
 import numpy as np
 from scipy.ndimage import minimum_filter1d
 from scipy.signal import lfilter
+
+from . import V_RODANDO
 
 SEMANA_S = 7 * 24 * 3600.0
 ORDENS_P = (1, 2, 3, 5, 8, 12, 16, 20, 25, 30)   # ordens testadas pelo BIC
@@ -115,6 +120,22 @@ def ajustar_ar(e, r_max=10, mask=None):
 
 def branquear(e, phi):
     return lfilter(np.concatenate([[1.0], -np.asarray(phi)]), [1.0], e) if len(phi) else np.asarray(e, float)
+
+
+def juntar_trechos(series, n_quebra):
+    """Concatena varios (y, sp, rodando) num so, com 'rodando' = False nas n_quebra primeiras
+    amostras de cada trecho depois do primeiro: o portao fica fechado na juncao e nenhum atraso
+    (ARX ou branqueamento) mistura o fim de um trecho com o inicio do outro."""
+    ys, sps, rods = [], [], []
+    for i, (y, sp, rod) in enumerate(series):
+        rod = np.array(rod, bool)
+        if i:
+            rod[:n_quebra] = False
+        ys.append(np.asarray(y, float))
+        sps.append(sp)
+        rods.append(rod)
+    sp = None if any(s is None for s in sps) else np.concatenate([np.asarray(s, float) for s in sps])
+    return np.concatenate(ys), sp, np.concatenate(rods)
 
 
 def ljung_box(z, lags=20):
@@ -312,13 +333,20 @@ class ProximoPassoV2:
         X = matriz_arx(y, sp, p, q, self.fs)
         self.coef = _mq(X[m], y[m])
         e = y - _prever(self.coef, X)
-        self.phi = ajustar_ar(e[g] - e[g].mean(), self.r_max) if self.r_max else np.zeros(0)
-        eps = branquear(e[g] - e[g].mean(), self.phi)
         self.media = float(e[g].mean())
+        ec = e - self.media
+        # AR do branqueamento ajustado so nas amostras do portao, mas com os atrasos tirados da
+        # serie continua (nao da serie comprimida, que emendaria trechos separados por paradas)
+        self.phi = ajustar_ar(ec, self.r_max, mask=g) if self.r_max else np.zeros(0)
+        eps = branquear(ec, self.phi)[g]
         self.sigma = float(eps.std())
         self.lb_antes = ljung_box(e[g])[:2]
         self.lb_depois = ljung_box(eps)[:2]
         return self
+
+    def treinar_trechos(self, series):
+        """Treino com varios trechos normais (lista de (y, sp, rodando)) sem atravessar as juncoes."""
+        return self.treinar(*juntar_trechos(series, max(self.p_max, self.q_max) + self.r_max + 1))
 
     def z(self, y, sp, rodando):
         """Residuo padronizado e branqueado (vetor comprimido no portao) e indices originais."""
@@ -328,7 +356,7 @@ class ProximoPassoV2:
         p, q = self.ordem
         e = y - _prever(self.coef, matriz_arx(y, sp, p, q, self.fs)) - self.media
         idx = np.flatnonzero(g)
-        return branquear(e[idx], self.phi) / self.sigma, idx
+        return branquear(e, self.phi)[idx] / self.sigma, idx        # branqueia na serie continua
 
     # --------------------------------------------------------- calibracao
     def calibrar(self, series):
@@ -338,10 +366,9 @@ class ProximoPassoV2:
         self.limiar, self.limiar_reps, self.max_calib = {}, {}, {}
         for nome, par in self.estatisticas.items():
             if nome == "contagem":
-                lim, p = limiar_contagem(zs, par.get("W", 6000), par.get("k_pico", 5.0), self.fs,
+                lim, _ = limiar_contagem(zs, par.get("W", 6000), par.get("k_pico", 5.0), self.fs,
                                          fa_semana=self.fa_semana / n)
                 reps = [lim]
-                self.p_pico = p
             else:
                 lim, reps = limiar_bootstrap(zs, nome, par, self._persist(nome), self.holdoff, self.fs,
                                              fa_semana=self.fa_semana / n, n_rep=self.n_rep, conf=self.conf)
@@ -389,7 +416,7 @@ class ProximoPassoV2:
         return m
 
 
-def de_dataframe(df, alvo="pb1", vizinhos=("festoon", "pb2"), v_rodando=50.0):
+def de_dataframe(df, alvo="pb1", vizinhos=("festoon", "pb2"), v_rodando=V_RODANDO):
     """(y, setpoint, rodando) a partir do formato de monitor.py (v_setpoint, v_<encoder>)."""
     rod = df[[f"v_{v}" for v in vizinhos]].mean(axis=1).to_numpy() > v_rodando
     return df[f"v_{alvo}"].to_numpy(float), df["v_setpoint"].to_numpy(float), rod
