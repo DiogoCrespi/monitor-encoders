@@ -21,7 +21,8 @@ bailarino das pontas), usadas como entradas se `usar_tensao_pontas=True`.
 5. CUSUM bilateral em cada z_j (12 estatisticas); alarme quando a maior passa h; a hipotese
    da maior e a isolacao. Reinicia depois do alarme; intervalo minimo `holdoff_min`.
 6. h calibrado por META de falso alarme em tempo (ex.: 1 por semana) com reamostragem em
-   blocos (1 h) do residuo normal, reproduzindo portao, persistencia, reinicio e intervalo.
+   blocos (`bloco_h`; v2.1 usa 2 h) do residuo normal, reproduzindo portao, persistencia,
+   reinicio e intervalo.
 """
 import json
 
@@ -286,13 +287,17 @@ class MonitorTorqueV2:
     # ------------------------------------------------------------ exportar
     _PARAMS = ("fs", "k", "h", "media_s", "ordem_ar", "lags_acel", "janela_s", "v_min",
                "estatistica", "lam", "usar_tensao_pontas", "hipoteses_mecanicas")
+    _PARAMS_CAL = ("meta_fa_semana", "bloco_h", "semanas_boot", "seed_boot")
 
     def exportar(self):
         d = {"fs": self.fs, "k": self.k, "h": self.h, "media_s": self.media_s,
              "persist_s": self.persist * self.media_s, "holdoff_min": self.holdoff * self.media_s / 60,
              "ordem_ar": self.ordem_ar, "lags_acel": self.lags, "janela_s": self.janela_s,
              "v_min": self.v_min, "estatistica": self.estatistica, "lam": self.lam,
-             "usar_tensao_pontas": self.usar_tensao, "hipoteses_mecanicas": self.mecanicas}
+             "usar_tensao_pontas": self.usar_tensao, "hipoteses_mecanicas": self.mecanicas,
+             # parametros da calibracao: sem eles, recalibrar um modelo carregado voltava a blocos de 1 h
+             "meta_fa_semana": self.meta, "bloco_h": self.bloco * self.media_s / 3600,
+             "semanas_boot": self.semanas, "seed_boot": self.seed_boot}
         d.update({"coef": {r: c.tolist() for r, c in self.coef.items()}, "mu": self.mu.tolist(),
                   "phi": self.phi.tolist(), "sigma_e": self.sigma_e.tolist(), "S": self.S.tolist()})
         return d
@@ -301,7 +306,8 @@ class MonitorTorqueV2:
     def carregar(cls, dados):
         if isinstance(dados, str):
             dados = json.loads(dados)
-        m = cls(**{k: dados[k] for k in cls._PARAMS + ("persist_s", "holdoff_min")})
+        m = cls(**{k: dados[k] for k in cls._PARAMS + ("persist_s", "holdoff_min")},
+                **{k: dados[k] for k in cls._PARAMS_CAL if k in dados})   # JSON antigo: padroes
         m.coef = {r: np.array(c) for r, c in dados["coef"].items()}
         m.mu, m.sigma_e, m.S = np.array(dados["mu"]), np.array(dados["sigma_e"]), np.array(dados["S"])
         m.phi = np.array(dados["phi"], dtype=float).reshape(m.ordem_ar, 3)

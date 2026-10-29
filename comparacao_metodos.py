@@ -2,7 +2,7 @@
 Comparacao de metodos de deteccao no MESMO protocolo da validacao conjunta -> comparacao_metodos.md/.csv
 
 Simulador poc/malha_fechada_v2.py; sementes iguais as de validacao_conjunta.py:
-    treino mf2 1-2 (12 h), calibracao mf2 3-8 (48 h), TESTE falhas 211-220, normais 191-195 (48 h).
+    treino mf2 1-2 (12 h), calibracao mf2 3-8 (48 h), TESTE falhas 221-230, normais 196-200 (48 h), 2a rodada.
 So os cenarios com falha nos sinais (velocidade/torque); os cenarios so de avisos (erros_com,
 degradacao_sinal) nao mudam esses sinais e ficam com o Modelo 1 (resultado em validacao_conjunta.md).
 
@@ -10,6 +10,9 @@ Regra comum a todos os metodos novos: estatistica por bloco de 60 s com a linha 
 portao do Modelo 2), alarme quando passa do limite, intervalo minimo de 10 min entre alarmes, limite
 calibrado por reamostragem em blocos de 2 h dos dados de calibracao para 1 alarme falso por semana
 de calendario (mesmo criterio do Modelo 2).
+Estatisticas por bloco (PCA, DPCA, CVA, IF): p-valor contra a calibracao (deixa-um-de-fora dentro da
+calibracao, cauda exponencial alem dos 50 maiores). Estatisticas de janela (GLR, ADWIN): janela
+atravessa paradas e recomeca depois de cada alarme, como a CUSUM do Modelo 2.
 
 Metodos:
     M2        residuo de torque + CUSUM (monitor/torque_v2.py, parametros do conjunto) - referencia
@@ -38,7 +41,7 @@ from poc.malha_fechada_v2 import simular_mf2
 
 FS, MEDIA_S, HOLDOFF, BLOCO_BOOT, SEMANAS_BOOT, META = 10, 60, 10, 120, 40, 1.0
 TREINO, CAL = (1, 2), range(3, 9)
-FALHAS, NORMAIS = range(211, 221), range(191, 196)
+FALHAS, NORMAIS = range(221, 231), range(196, 201)   # 2a rodada de teste (ver validacao_conjunta.py)
 INICIO_S, HORAS_NORMAL = 3600.0, 48
 CASOS = [("deriva_ganho", "festoon"), ("deriva_ganho", "pb1"), ("deriva_ganho", "pb2"),
          ("atrito", "festoon"), ("atrito", "pb1"), ("atrito", "pb2"),
@@ -49,6 +52,7 @@ NOMES = {"M2": "Resíduo de torque + CUSUM (Modelo 2)", "CONF": "Conforme sobre 
          "IF": "Isolation Forest"}
 OUT = Path(__file__).with_name("comparacao_metodos.md")
 SEMANA_S = 168 * 3600.0
+CAUDA = 50          # pontos da cauda empirica usados para extrapolar o p-valor alem do maximo (pvalor)
 
 
 # ---------------------------------------------------------------- blocos e atributos
@@ -120,11 +124,19 @@ class CVAStat:
     def __init__(self, p=3, f=3, var=0.95):
         self.p, self.f, self.var = p, f, var
 
+    def _passado(self, F, inicio):
+        """p_t = [F_{t-1} .. F_{t-p}] (estado estimado para o instante t, sem usar F_t)."""
+        Xp, ok = defasar(F, inicio, self.p)
+        return Xp[:, F.shape[1]:], ok
+
     def _pf(self, F, inicio):
-        Xp, okp = defasar(F, inicio, self.p)                    # F_t .. F_{t-p}
-        past = Xp[:, F.shape[1]:]                               # F_{t-1} .. F_{t-p}
-        Xf, okf = defasar(F, inicio, self.f - 1)                # futuro alinhado ao fim: F_t .. F_{t-f+1}
-        return past, Xf, okp & okf
+        """Pares (passado, futuro) SEM sobreposicao, alinhados no fim do futuro tau = t + f - 1:
+        futuro f_t = [F_{t+f-1} .. F_t] (defasagens 0..f-1 de tau), passado p_t = [F_{t-1} .. F_{t-p}]
+        (defasagens f..f+p-1 de tau). Antes o passado eram as defasagens 1..p de tau e repetia
+        f-1 blocos do futuro (correlacao canonica trivial = 1)."""
+        nF = F.shape[1]
+        D, ok = defasar(F, inicio, self.p + self.f - 1)
+        return D[:, self.f * nF:], D[:, : self.f * nF], ok
 
     def treinar(self, Fs):
         P, Fu = [], []
@@ -152,7 +164,7 @@ class CVAStat:
         return self
 
     def stat(self, F, inicio):
-        p, _, ok = self._pf(F, inicio)
+        p, ok = self._passado(F, inicio)
         P = (p - self.mp) / self.sp
         z = P @ self.J.T
         r = P @ self.Lr.T
@@ -219,13 +231,37 @@ class ADWINStat:
 
 
 # ---------------------------------------------------------------- p-valor combinado e alarmes
-def pvalor(ref, x):
-    """p-valor empirico da cauda superior, coluna a coluna; combina pelo minimo (escala -log10)."""
+def p_empirico(r, x, dentro=False):
+    """p-valor conforme da cauda superior contra a referencia ORDENADA r.
+    dentro=True: x pertence a r (calibracao) -> deixa-um-de-fora, (#{r_j >= x}) / n, que ja conta o
+    proprio ponto uma vez; a formula de fora, (#{r_j >= x} + 1)/(n + 1), contaria o ponto duas vezes e
+    deixaria os p-valores da calibracao maiores que os do teste (limite frouxo -> mais FA no teste)."""
+    k = len(r) - np.searchsorted(r, x, side="left")
+    return np.maximum(k, 1) / len(r) if dentro else (k + 1) / (len(r) + 1)
+
+
+def p_cauda(r, x, dentro=False, m=CAUDA):
+    """p_empirico com a cauda acima do m-esimo maior valor extrapolada por exponencial (POT):
+    p = (m/n) exp(-(x - u)/beta), beta = excesso medio dos m maiores sobre u.
+    Sem isso o p-valor tem piso 1/n (n ~ 14 mil blocos de calibracao, ~8 mil por semana): so o maior
+    valor de cada coluna ja da ~1 alarme por semana na reamostragem, a bissecao termina ACIMA do maior
+    -log10 p atingivel no teste (log10(n+1)) e o metodo fica mudo (CVA: 0 deteccoes no dev), ou o
+    limite cai num degrau da escala discreta definido por 1-2 pontos."""
+    p = p_empirico(r, x, dentro)
+    n = len(r)
+    if n <= m:
+        return p
+    u = r[n - m - 1]
+    beta = max(float(np.mean(r[n - m:] - u)), 1e-12)
+    return np.where(x > u, np.maximum((m / n) * np.exp(-(x - u) / beta), 1e-300), p)   # sem log10(0)
+
+
+def pvalor(ref, x, dentro=False):
+    """p-valor da cauda superior (empirico + cauda exponencial), coluna a coluna; combina pelo minimo
+    (escala -log10)."""
     out = np.zeros(len(x))
     for c in range(x.shape[1]):
-        r = np.sort(ref[:, c])
-        p = (len(r) - np.searchsorted(r, x[:, c], side="left") + 1) / (len(r) + 1)
-        out = np.maximum(out, -np.log10(p))
+        out = np.maximum(out, -np.log10(p_cauda(np.sort(ref[:, c]), x[:, c], dentro)))
     return out
 
 
@@ -252,6 +288,33 @@ def cusum_logp(p, eps, L):
     return out
 
 
+def alarmes_janela(fn, X, W, L, maximo=None, cache=None):
+    """Alarmes de uma estatistica de janela (GLR, ADWIN) que RECOMECA depois de cada alarme, como a
+    CUSUM do Modelo 2 (volta a zero) e o martingale conforme: sem isso uma unica excursao deixa a janela
+    de 4 h acima do limite por horas e conta um alarme a cada 10 min (FA em rajada, ~20 por arquivo).
+    fn(X) -> (g, arg ou None) com X tratado como um trecho unico; depois de um alarme em i so os W
+    blocos seguintes mudam (a janela comeca em i + 1), o resto e a estatistica sem reinicio."""
+    if cache is not None and id(X) in cache:
+        g0, a0 = cache[id(X)]
+    else:
+        g0, a0 = fn(X)
+        if cache is not None:
+            cache[id(X)] = (g0, a0)
+    out, pos, prox, n = [], 0, 0, len(X)
+    while pos < n and (maximo is None or len(out) < maximo):
+        fim = min(n, pos + W) if pos else 0
+        gl, al = fn(X[pos:fim]) if fim > pos else (np.empty(0), None)
+        g = np.concatenate([gl, g0[fim:]])
+        cand = np.flatnonzero(g > L) + pos
+        cand = cand[cand >= prox]
+        if not len(cand):
+            break
+        i = int(cand[0])
+        out.append((i, None if a0 is None else int(al[i - pos] if i < fim else a0[i])))
+        pos, prox = i + 1, i + HOLDOFF
+    return out
+
+
 def calibrar(series, contar, n_sem, rng_seed=0, lo=1e-3, hi=1e4):
     """L tal que a taxa de alarmes na reamostragem de semanas (blocos de 2 h) = META por semana."""
     rng = np.random.default_rng(rng_seed)
@@ -260,16 +323,31 @@ def calibrar(series, contar, n_sem, rng_seed=0, lo=1e-3, hi=1e4):
     semanas = [np.concatenate([S[i:i + BLOCO_BOOT] for i in rng.integers(0, len(S) - BLOCO_BOOT, nb)])[:n_sem]
                for _ in range(SEMANAS_BOOT)]
 
-    def taxa(L):
-        return sum(len(contar(w, L)) for w in semanas) / SEMANAS_BOOT
+    def taxa(L, parar=True):
+        tot = 0
+        for w in semanas:
+            tot += len(contar(w, L))
+            if parar and tot > META * SEMANAS_BOOT:             # ja passou da meta: decisao igual
+                break
+        return tot / SEMANAS_BOOT
 
     while hi / lo > 1.01:
         mid = np.sqrt(lo * hi)
         lo, hi = (mid, hi) if taxa(mid) > META else (lo, mid)
-    return float(hi), taxa(hi)
+    return float(hi), taxa(hi, parar=False)
 
 
 # ---------------------------------------------------------------- execucao
+def um_trecho(inicio):
+    """Um unico trecho por arquivo: GLR e ADWIN somam o residuo branqueado (ordem_ar = 0, sem
+    defasagens) atravessando paradas, como a CUSUM do Modelo 2 faz. Com o corte por trecho de regime
+    (mediana ~15 blocos, maximo ~60) a janela de 4 h nunca passava de ~1 h e o ADWIN (W >= 20) ficava
+    cego em ~1/3 dos blocos."""
+    out = np.zeros(len(inicio), bool)
+    out[:1] = True
+    return out
+
+
 def correto_iso(falha, rolo, hip):
     return HIPOTESES[hip] == (("mecanica" if falha == "atrito" else "encoder"), rolo)
 
@@ -308,20 +386,33 @@ def main():
     for k, e in est.items():                                    # p-valores contra a calibracao
         st = [e.stat(F, i) for F, _, i in Fcal]
         ref[k] = np.vstack([s[ok] for s, ok in st])
-        series = [np.where(ok, pvalor(ref[k], s), 0.0) for s, ok in st]
+        series = [np.where(ok, pvalor(ref[k], s, dentro=True), 0.0) for s, ok in st]   # p deixa-um-de-fora
         lim[k], info[k] = calibrar(series, alarmes, n_sem)
     glr, adw = GLRStat(), ADWINStat()
-    lim["GLR"], info["GLR"] = calibrar([glr.stat(Z, i)[0][:, 0] for Z, _, i, _ in Zcal], alarmes, n_sem)
-    lim["ADWIN"], info["ADWIN"] = calibrar([adw.stat(nrm, i)[0][:, 0] for _, _, i, nrm in Zcal], alarmes, n_sem)
+
+    def f_glr(Z):
+        g, _, arg = glr.stat(Z, um_trecho(np.ones(len(Z), bool)))
+        return g[:, 0], arg
+
+    def f_adw(x):
+        return adw.stat(x, um_trecho(np.ones(len(x), bool)))[0][:, 0], None
+
+    # a reamostragem e feita sobre as entradas (Z, |e|) e a estatistica recalculada com reinicio, como
+    # no Modelo 2; teto por semana > META * SEMANAS_BOOT nao muda a decisao da bissecao
+    teto = int(META * SEMANAS_BOOT) + 1
+    cg, ca = {}, {}
+    lim["GLR"], info["GLR"] = calibrar([Z for Z, _, _, _ in Zcal],
+                                       lambda w, L: alarmes_janela(f_glr, w, glr.W, L, teto, cg), n_sem)
+    lim["ADWIN"], info["ADWIN"] = calibrar([nrm for _, _, _, nrm in Zcal],
+                                           lambda w, L: alarmes_janela(f_adw, w, adw.W, L, teto, ca), n_sem)
     sc_cal = np.concatenate([np.abs(Z).max(1) for Z, _, _, _ in Zcal])
     sc_sorted = np.sort(sc_cal)
 
-    def pconf(Z):
-        s = np.abs(Z).max(1)
-        return (len(sc_sorted) - np.searchsorted(sc_sorted, s, side="left") + 1) / (len(sc_sorted) + 1)
+    def pconf(Z, dentro=False):
+        return p_empirico(sc_sorted, np.abs(Z).max(1), dentro)
 
     EPS = 0.5
-    lim["CONF"], info["CONF"] = calibrar([pconf(Z) for Z, _, _, _ in Zcal],
+    lim["CONF"], info["CONF"] = calibrar([pconf(Z, dentro=True) for Z, _, _, _ in Zcal],
                                          lambda w, L: cusum_logp(w, EPS, L), n_sem, lo=0.1, hi=1e3)
     print(f"calibracao: {time.time() - t0:.0f} s; limites {lim}", flush=True)
 
@@ -333,9 +424,8 @@ def main():
             s, ok = e.stat(F, inicio)
             out[k] = [(t[i], None) for i in alarmes(np.where(ok, pvalor(ref[k], s), 0.0), lim[k])]
         Z, tz, iz, nrm = zinfo(df)
-        g, _, arg = glr.stat(Z, iz)
-        out["GLR"] = [(tz[i], int(arg[i]) % len(HIPOTESES)) for i in alarmes(g[:, 0], lim["GLR"])]
-        out["ADWIN"] = [(tz[i], None) for i in alarmes(adw.stat(nrm, iz)[0][:, 0], lim["ADWIN"])]
+        out["GLR"] = [(tz[i], a % len(HIPOTESES)) for i, a in alarmes_janela(f_glr, Z, glr.W, lim["GLR"])]
+        out["ADWIN"] = [(tz[i], None) for i, _ in alarmes_janela(f_adw, nrm, adw.W, lim["ADWIN"])]
         out["CONF"] = [(tz[i], None) for i in cusum_logp(pconf(Z), EPS, lim["CONF"])]
         return out
 
@@ -377,16 +467,23 @@ def main():
                        "atraso_mediano_min": round(float(np.nanmedian(d.atraso_mediano_min)), 0)
                        if d.detectados.sum() else None,
                        "fa": fa[k] + pre[k], "fa_semana": round((fa[k] + pre[k]) / horas_fa * 168, 2),
+                       # separados: a 1a hora de cada cenario e partida a frio (redutor frio), 100 partidas
+                       # em 100 h contra 6 em 288 h na calibracao; o Modelo 2 modela o aquecimento, os
+                       # metodos sobre medias brutas (PCA, DPCA, CVA, IF) nao
+                       "fa_normais": fa[k], "fa_1a_hora": pre[k],
                        "isolacao": f"{int(d.isolacao_certa.sum())}/{int(d.detectados.sum())}"
                        if k in ("M2", "GLR") else "-",
                        "fa_boot_cal": round(info[k], 2) if k in info else None})
     R = pd.DataFrame(resumo)
     R.to_csv(OUT.with_suffix(".csv"), index=False)
-    df.to_csv(OUT.with_name("comparacao_metodos_casos.csv"), index=False)
+    df.to_csv(OUT.with_name(OUT.stem + "_casos.csv"), index=False)
     texto = ["# Comparação de métodos no simulador de malha fechada v2", "",
-             "Gerado por `comparacao_metodos.py` (protocolo no cabeçalho). Sementes de teste 211–220 (falhas) e "
-             "191–195 (normais, 5 × 48 h), as mesmas de `validacao_conjunta.md`. Só cenários com falha nos sinais "
-             f"(100 cenários). Alarmes falsos contados em {horas_fa} h (normais + 1ª hora dos cenários). "
+             "Gerado por `comparacao_metodos.py` (protocolo no cabeçalho). Sementes de teste 221–230 (falhas) e "
+             "196–200 (normais, 5 × 48 h), as mesmas de `validacao_conjunta.md`. Só cenários com falha nos sinais "
+             f"(100 cenários). Alarmes falsos contados em {horas_fa} h (normais + 1ª hora dos cenários; "
+             f"`fa_normais` = {HORAS_NORMAL * len(NORMAIS)} h normais, `fa_1a_hora` = 1ª hora dos "
+             f"{len(CASOS) * len(FALHAS)} cenários, que começa com o redutor frio — uma partida a frio por "
+             f"hora contra {len(CAL)} em {len(CAL) * 48} h na calibração). "
              "Todos os limites calibrados para 1 alarme falso por semana na mesma calibração (mf2 3–8).", "",
              R.drop(columns=["chave"]).to_markdown(index=False), "",
              "Por caso:", "", df.to_markdown(index=False), "", f"Tempo: {time.time() - t0:.0f} s."]

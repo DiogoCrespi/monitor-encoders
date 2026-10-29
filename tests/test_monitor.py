@@ -117,3 +117,11 @@ def test_exportar_com_torque_reproduz_resultado(monitor_mf):
     _, ev_a = monitor_mf.analisar(df)
     _, ev_b = MonitorEncoder.carregar(json.dumps(monitor_mf.exportar())).analisar(df)
     assert ev_a == ev_b
+
+
+def test_arquivo_mais_curto_que_1h_com_contador_de_erros(monitor):
+    # janela de 1 h do contador nao pode estourar em arquivo curto (antes: erro de broadcast)
+    df = de_simulacao(simular(0.5, seed=4)).copy()
+    df["erros_pb1"] = np.arange(len(df)) // 1000
+    ind, _ = monitor.analisar(df)
+    assert len(ind["erros"]) == len(df) and ind["erros"][-1] == df["erros_pb1"].iloc[-1]

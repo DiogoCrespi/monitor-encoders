@@ -15,8 +15,11 @@ modelos nem em desenvolvimento - 201-205 ficaram de fora porque outro estudo as 
     treino            mf2 1-2 (12 h cada)              (as do treino do Modelo 2)
     calibracao        mf2 3-8 (48 h cada)              (as da calibracao do Modelo 2 v2.1)
     desenvolvimento   falhas 41-45, normais 46-47 (48 h)
-    TESTE (uma vez)   falhas 211-220, normais 191-195 (48 h); Modelo 1 sozinho tambem em
-                      4 semanas de log normal por semente (simulador_avisos.simular, 191-195)
+    TESTE (uma vez)   falhas 221-230, normais 196-200 (48 h); Modelo 1 sozinho tambem em
+                      4 semanas de log normal por semente (simulador_avisos.simular, 196-200)
+                      2a rodada (29/10/2026), depois da revisao do codigo. A 1a rodada usou
+                      falhas 211-220 e normais 191-195; essas sementes foram reaproveitadas em
+                      comparacao_metodos.py e ja foram vistas, por isso foram trocadas.
 Cenarios de falha: 6 h, falha comeca em 1 h, rampa de 4 h (simular_mf2). Nos cenarios so de
 avisos (erros_com, degradacao_sinal) a velocidade e o torque sao normais e a degradacao vai de
 1 h ate a falha final em 6 h.
@@ -31,6 +34,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from scipy.stats import chi2
 
 from monitor.conjunto import MODELOS, MonitorConjunto
 from monitor.torque_v2 import MonitorTorqueV2
@@ -43,7 +47,7 @@ HORAS_NORMAL = 48
 SEMANA_H = 168.0
 TREINO, CAL = (1, 2), range(3, 9)
 ETAPAS = {"dev": dict(falha=range(41, 46), normal=range(46, 48)),
-          "teste": dict(falha=range(211, 221), normal=range(191, 196))}
+          "teste": dict(falha=range(221, 231), normal=range(196, 201))}
 CASOS = [("deriva_ganho", "festoon"), ("deriva_ganho", "pb1"), ("deriva_ganho", "pb2"),
          ("atrito", "festoon"), ("atrito", "pb1"), ("atrito", "pb2"),
          ("perda_pulsos", "pb1"), ("perda_pulsos", "pb2"),
@@ -81,6 +85,11 @@ def correto(e, falha, rolo):
     return e["encoder"] == rolo
 
 
+def limite_95(k, horas):
+    """Limite superior unilateral 95 % (Poisson exato) da taxa, em eventos por semana."""
+    return chi2.ppf(0.95, 2 * k + 2) / 2 / horas * SEMANA_H
+
+
 def _cel(atrasos, n):
     return f"{len(atrasos)}/{n}" + (f" · {np.median(atrasos):.0f} min" if atrasos else "")
 
@@ -88,6 +97,7 @@ def _cel(atrasos, n):
 def avaliar_casos(mc, base, sementes):
     linhas_det, linhas_iso, pre, todos_pre = [], [], {m: 0 for m in MODELOS}, 0
     pre_sev = {"baixa": 0, "media": 0, "alta": 0}
+    tot_det, tot_iso = 0, 0
     n = len(sementes)
     for falha, rolo in CASOS:
         atr = {m: [] for m in MODELOS + ("conjunto", "m2_sem_tensao")}
@@ -129,11 +139,12 @@ def avaliar_casos(mc, base, sementes):
                            "1º a disparar": ", ".join(f"{ROTULO[m].split()[0]} {k}" for m, k in primeiro.items() if k)
                            or "-"})
         det = len(atr["conjunto"])
+        tot_det, tot_iso = tot_det + det, tot_iso + iso1
         linhas_iso.append({"caso": caso, "isolação no 1º evento do conjunto": f"{iso1}/{det}",
                            "M2: 1º alarme → confirmada": f"{iso_m2}/{n_m2} → {conf_m2}/{n_m2}",
                            "eventos depois do início apontando outro encoder/causa": errado})
         print(f"  {caso}: {linhas_det[-1]['conjunto']}", flush=True)
-    return linhas_det, linhas_iso, pre, pre_sev, todos_pre
+    return linhas_det, linhas_iso, pre, pre_sev, todos_pre, (tot_det, tot_iso)
 
 
 def avaliar_normais(mc, base, sementes):
@@ -180,7 +191,7 @@ def etapa(nome):
     por_modelo, sev, m2b, exemplos = avaliar_normais(mc, base, cfg["normal"])
     horas = HORAS_NORMAL * len(cfg["normal"])
     print(f"normais: {por_modelo} ({time.time() - t0:.0f} s)", flush=True)
-    det, iso, pre, pre_sev, todos_pre = avaliar_casos(mc, base, cfg["falha"])
+    det, iso, pre, pre_sev, todos_pre, (tot_det, tot_iso) = avaliar_casos(mc, base, cfg["falha"])
     fa1, sem1 = m1_longo(mc, cfg["normal"])
     n_cen = len(CASOS) * len(cfg["falha"])
     total = sum(por_modelo.values())
@@ -210,13 +221,19 @@ def etapa(nome):
         f"Severidade dos falsos alarmes ({horas} h normais + 1ª hora dos cenários = {hp} h): "
         + ", ".join(f"{k} {v}" for k, v in sev_tot.items())
         + f" → {sum(sev_tot.values()) / hp * SEMANA_H:.2f} por semana no total, "
-        f"{sev_tot['alta'] / hp * SEMANA_H:.2f} por semana com severidade alta.",
+        f"{sev_tot['alta'] / hp * SEMANA_H:.2f} por semana com severidade alta. Limite superior 95 % "
+        f"(Poisson exato) da taxa do conjunto: {limite_95(total + todos_pre, hp):.2f}/semana com as {hp} h, "
+        f"{limite_95(total, horas):.2f}/semana só com as {horas} h normais contínuas (a 1ª hora de cada "
+        "cenário começa parada, com o CUSUM zerado: exposição menor que uma hora de regime).",
         f"Modelo 1 sozinho em {sem1:.0f} semanas de log normal (mesmas sementes, 3 encoders): {fa1} FA "
         f"= {fa1 / sem1:.2f} por semana.",
         "",
         "### Detecção (detectados/n · atraso mediano desde o início da falha) e qual modelo disparou primeiro",
         "",
         pd.DataFrame(det).to_markdown(index=False),
+        "",
+        f"Total: {tot_det}/{n_cen} cenários detectados (qualquer evento depois do início, de qualquer modelo); "
+        f"o 1º evento do conjunto apontou o encoder/causa certo em {tot_iso}/{tot_det}.",
         "",
         "### Isolação",
         "",

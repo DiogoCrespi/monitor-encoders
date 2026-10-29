@@ -49,6 +49,7 @@ def validar_formato(df, alvo, vizinhos):
 
 
 def _atraso(x, k):
+    k = min(k, len(x))   # atraso maior que a serie (ex.: janela de 1 h em arquivo curto): tudo = x[0]
     return np.concatenate([np.full(k, x[0]), x[:-k]])
 
 

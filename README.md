@@ -146,17 +146,21 @@ A tabela segue a ordem de desenvolvimento. A coluna "Situação" diz o que ficou
 
 | Método | Escala | Atrito | Pulsos | Ruído | Total | Alarmes falsos/semana | Indica o rolo |
 |---|---|---|---|---|---|---|---|
-| Monitor conjunto | 30 | 30 | 20 | 18 | 98 | 0,0 | sim |
-| CVA (variáveis canônicas) | 30 | 30 | 20 | 15 | 95 | 4,0 | não |
-| PCA estática (T² e Q) | 30 | 30 | 20 | 2 | 82 | 7,9 | não |
-| PCA dinâmica | 30 | 30 | 20 | 1 | 81 | 7,9 | não |
-| Resíduo de torque + CUSUM (Modelo 2) | 30 | 30 | 20 | 0 | 80 | 0,0 | sim |
-| Conforme sobre o resíduo de torque | 30 | 30 | 20 | 0 | 80 | 0,0 | não |
-| GLR sobre o resíduo de torque | 30 | 30 | 19 | 0 | 79 | 0,5 | sim |
-| Janela adaptativa (ADWIN simplificado) | 30 | 12 | 20 | 0 | 62 | 0,0 | não |
-| Avisos (Modelo 1) | 0 | 0 | 18 | 18 | 36 | 0,5 | sim |
-| Isolation Forest | 10 | 2 | 2 | 0 | 14 | 0,0 | não |
-| Próximo passo (Modelo 3) | 0 | 0 | 0 | 0 | 0 | 0,0 | sim |
+| CVA (variáveis canônicas) | 30 | 30 | 20 | 11 | 91 | 0,0 | não |
+| Resíduo de torque + CUSUM (Modelo 2) | 30 | 30 | 20 | 0 | 80 | 0,0 | sim (71/80) |
+| Conforme sobre o resíduo de torque | 30 | 30 | 20 | 0 | 80 | 0,5 | não |
+| PCA dinâmica (T² e Q) | 30 | 30 | 20 | 0 | 80 | 0,5 | não |
+| GLR sobre o resíduo de torque | 30 | 30 | 20 | 0 | 80 | 1,0 | sim (70/80) |
+| Janela adaptativa (ADWIN simplificado) | 30 | 30 | 20 | 0 | 80 | 1,0 | não |
+| PCA estática (T² e Q) | 30 | 29 | 20 | 0 | 79 | 0,5 | não |
+| Isolation Forest | 13 | 4 | 0 | 0 | 17 | 0,0 | não |
+
+Os números acima são da 2ª rodada (29/10/2026), feita depois da revisão do código e em sementes novas (falhas 221–230, normais 196–200). A revisão corrigiu três problemas que prejudicavam os métodos de referência:
+- a CVA montava o passado e o futuro sobrepostos;
+- os p-valores da calibração contavam o próprio ponto e deixavam limites inalcançáveis;
+- o GLR e a janela adaptativa cortavam a janela a cada parada.
+
+Com a montagem justa, quase todos os métodos empatam em cerca de 80, dentro da meta de alarmes falsos. A CVA é o melhor detector sem avisos (91, a única que pega ruído) e o Modelo 2 é o que indica o rolo. As linhas dos Modelos 1 e 3 e do monitor conjunto saem de `validacao_conjunta.md`. Para o Isolation Forest, `diagnostico_isolation_forest.md` mostra que o resultado depende da representação: 17 nos sinais originais, 65 nos rotacionados pela PCA e 70 no resíduo de torque.
 
 O teste de Page-Hinkley não foi rodado, porque usa a mesma recursão da CUSUM. O filtro de Kalman completo ficou para a continuidade.
 

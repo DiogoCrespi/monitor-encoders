@@ -142,6 +142,13 @@ def test_exportar_e_carregar_reproduz_resultado(monitor):
     np.testing.assert_allclose(ind_a["estatistica"], ind_b["estatistica"])
 
 
+def test_exportar_preserva_parametros_da_calibracao(monitor):
+    """Recalibrar um modelo carregado deve usar os mesmos blocos de 2 h (com 1 h o FA sai subestimado)."""
+    copia = MonitorTorqueV2.carregar(json.dumps(monitor.exportar()))
+    assert (copia.bloco, copia.meta, copia.semanas, copia.seed_boot) == \
+        (monitor.bloco, monitor.meta, monitor.semanas, monitor.seed_boot)
+
+
 def test_formato_invalido_e_rejeitado(monitor):
     with pytest.raises(ValueError, match="tq_pb2"):
         monitor.analisar(pd.DataFrame({"t_s": [0.0], "v_setpoint": [0.0], "v_festoon": [0.0], "v_pb1": [0.0],
