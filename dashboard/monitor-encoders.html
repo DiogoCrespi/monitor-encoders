@@ -125,16 +125,6 @@ details pre { overflow-x: auto; font-size: .75rem; background: var(--tab); paddi
   &quot;fator_seguranca&quot;: 3.0,
   &quot;canais&quot;: [
    {
-    &quot;encoder&quot;: &quot;pb2&quot;,
-    &quot;familia&quot;: &quot;sinal&quot;,
-    &quot;drive&quot;: &quot;tipo_b&quot;,
-    &quot;lambda0_h&quot;: 0.01488095238095238,
-    &quot;n_treino&quot;: 5,
-    &quot;mu0&quot;: 0.00248015873015873,
-    &quot;k&quot;: 0.008348929634774094,
-    &quot;h&quot;: 2.1589852925390005
-   },
-   {
     &quot;encoder&quot;: &quot;festoon&quot;,
     &quot;familia&quot;: &quot;cabo&quot;,
     &quot;drive&quot;: &quot;tipo_a&quot;,
@@ -173,6 +163,16 @@ details pre { overflow-x: auto; font-size: .75rem; background: var(--tab); paddi
     &quot;mu0&quot;: 8.267195767195767e-05,
     &quot;k&quot;: 0.0002782976544924698,
     &quot;h&quot;: 0.999721703119576
+   },
+   {
+    &quot;encoder&quot;: &quot;pb2&quot;,
+    &quot;familia&quot;: &quot;sinal&quot;,
+    &quot;drive&quot;: &quot;tipo_b&quot;,
+    &quot;lambda0_h&quot;: 0.01488095238095238,
+    &quot;n_treino&quot;: 5,
+    &quot;mu0&quot;: 0.00248015873015873,
+    &quot;k&quot;: 0.008348929634774094,
+    &quot;h&quot;: 2.1589852925390005
    }
   ]
  },
@@ -191,6 +191,10 @@ details pre { overflow-x: auto; font-size: .75rem; background: var(--tab); paddi
   &quot;lam&quot;: 0.1,
   &quot;usar_tensao_pontas&quot;: true,
   &quot;hipoteses_mecanicas&quot;: true,
+  &quot;meta_fa_semana&quot;: 1.0,
+  &quot;bloco_h&quot;: 2.0,
+  &quot;semanas_boot&quot;: 40,
+  &quot;seed_boot&quot;: 0,
   &quot;coef&quot;: {
    &quot;festoon&quot;: [
     35.32237798383458,

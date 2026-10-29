@@ -35,18 +35,25 @@ Resultados de cada modelo no seu próprio teste (sementes não usadas no desenvo
 - Torque v2.1: deriva 10/10 nos três rolos (25–42 min), 1 falso alarme em 240 h. Isolação confirmada em 29/30 derivas só com torque e setpoint, 30/30 com a tensão das pontas.
 - Próximo passo v2, simulador com malha lenta: perda de pulsos e ruído 10/10 (7 e 14 min), 0 falso alarme em 240 h.
 
-Validação conjunta (`validacao_conjunta.py`): os três modelos juntos no simulador v2, com avisos acoplados. Teste rodado uma vez em sementes novas: falhas 211–220 (12 casos × 10 cenários de 6 h, falha a partir de 1 h, rampa de 4 h), normais 191–195 (5 × 48 h).
+Validação conjunta (`validacao_conjunta.py`): os três modelos juntos no simulador v2, com avisos acoplados. Esta é a 2ª rodada de teste, feita depois da revisão do código e em sementes novas: falhas 221–230 (12 casos × 10 cenários de 6 h, falha a partir de 1 h, rampa de 4 h) e normais 196–200 (5 × 48 h). A 1ª rodada (sementes 211–220 e 191–195) deu 117/120; essas sementes foram reaproveitadas na comparação de métodos e por isso foram trocadas.
 
 | Caso | Detecção | Primeiro a disparar | Isolação no 1º evento |
 |---|---|---|---|
-| Deriva Festoon / P&B1 / P&B2 | 10/10, 35 / 27 / 31 min | torque | 30/30 |
-| Atrito Festoon / P&B1 / P&B2 | 10/10, 91 / 63 / 78 min | torque | 27/30 (confirmada 30/30) |
-| Perda de pulsos P&B1 / P&B2 | 10/10, 143 / 139 min | avisos 9, torque 11 | 18/20 |
-| Ruído P&B1 / P&B2 | 9/10, 147 / 158 min | avisos | 18/18 |
-| Erros de comunicação P&B1 | 10/10, 163 min | avisos | 10/10 |
-| Degradação de sinal Festoon | 9/10, 232 min | avisos | 9/9 |
+| Deriva Festoon / P&B1 / P&B2 | 10/10, 34 / 29 / 31 min | torque | 30/30 |
+| Atrito Festoon / P&B1 / P&B2 | 10/10, 82 / 62 / 82 min | torque | 26/30 (confirmada 30/30) |
+| Perda de pulsos P&B1 / P&B2 | 10/10, 129 / 130 min | avisos 12, torque 8 | 18/20 |
+| Ruído P&B1 / P&B2 | 10/10, 140 / 137 min | avisos | 20/20 |
+| Erros de comunicação P&B1 | 10/10, 174 min | avisos | 10/10 |
+| Degradação de sinal Festoon | 9/10, 252 min | avisos | 8/9 |
 
-Falsos alarmes do conjunto: 0 em 240 h normais e 0 na primeira hora dos 120 cenários (360 h; a 95 %, menos de ~1,4 por semana). O modelo de avisos sozinho, em 20 semanas de log normal da mesma linha, deu 0,45 por semana. Total: 117/120 cenários detectados; o primeiro evento apontou o encoder (ou a causa mecânica) certo em 112/117.
+Falsos alarmes do conjunto:
+- 1 em 240 h normais, do modelo de avisos, e 0 na primeira hora dos 120 cenários.
+- A 95 %, isso dá menos de 3,3 por semana nas 240 h normais. Essa duração de teste não basta para provar a meta de 1 por semana.
+- O modelo de avisos sozinho, em 20 semanas de log normal, deu 1,05 por semana.
+
+Total: 119/120 cenários detectados. O primeiro evento apontou o encoder, ou a causa mecânica, certo em 112/119.
+
+As 39 detecções de ruído, erros de comunicação e degradação de sinal vêm só dos avisos e dependem da taxa de avisos suposta no gerador. Com 0,5 em vez de 2 incidentes por hora, perda de pulsos e ruído caem para 20–40 %.
 
 ## Dados
 
@@ -140,7 +147,7 @@ A tabela segue a ordem de desenvolvimento. A coluna "Situação" diz o que ficou
 | **Modelo 2. Torque v2.1 com isolação** | deriva 10/10 nos três rolos; 1 alarme falso/240 h; isolação 29/30 (30/30 com a tensão das pontas) | **mantido** |
 | Próximo passo v2: variantes EWMA, CUSUM, variância, curtose e contagem de picos | ver `validacao_proximo_passo_v2.md` | escolhidas variância em janela e contagem de picos |
 | **Modelo 3. Próximo passo v2** (ARX + branqueamento) | malha lenta: pulsos e ruído 10/10, 0 alarme falso; malha de 10 ms: 0 | **mantido, opcional** |
-| **Monitor conjunto (1 + 2 + 3)** | 117/120; 0 alarme falso em 360 h; isolação certa em 112/117 | **final** |
+| **Monitor conjunto (1 + 2 + 3)** | 119/120; 1 alarme falso em 240 h normais; isolação certa em 112/119 (2ª rodada, sementes novas; a 1ª deu 117/120) | **final** |
 
 **Etapa 4. Comparação final no simulador v2** (`comparacao_metodos.py`): mesmas sementes da validação conjunta, 100 cenários com falha nos sinais. Todos os limites foram calibrados para 1 alarme falso por semana.
 
@@ -179,6 +186,28 @@ O teste de Page-Hinkley não foi rodado, porque usa a mesma recursão da CUSUM. 
 | | próprio sinal + EWMA | 4/8 |
 | | Modelo 3 v2 | 3/8 |
 | | Isolation Forest no resíduo + EWMA | 3,6 % de falso alarme |
+
+## Revisão de 29/10/2026: o que os resultados provam e o que não provam
+
+Cinco revisões independentes do código e do protocolo. Os bugs encontrados foram corrigidos e o teste foi rodado de novo, em sementes novas. As limitações que restam:
+
+- **Simulador e detector usam a mesma física.** As assinaturas do Modelo 2, o atrito só no próprio rolo, a inércia e o aquecimento do redutor estão nos dois.
+  - Treinado na própria planta, o Modelo 2 aguenta ±30 % de mudança nos parâmetros.
+  - Se a planta mudar depois do treino, ele não aguenta. Exemplos em 96 h normais:
+    - elasticidade do papel −2 %: 6 a 57 alarmes falsos;
+    - elasticidade do papel −5 %: mais de 100;
+    - draw +5 %: 46 a 320.
+  - Para o modelo, uma mudança de papel ou de draw parece deriva de encoder. Com dado real, é preciso recalibrar a cada troca de receita ou material e usar o setpoint de draw como entrada.
+- **Modelo 1 (avisos):**
+  - A antecedência mediana de 29 h sai das durações de degradação supostas no gerador (cerca de 0,6 × a duração), não do método.
+  - A detecção depende da taxa de avisos suposta durante a falha. Com 0,5 em vez de 2 incidentes por hora, perda de pulsos e ruído caem para 20–40 %; sem avisos, para zero.
+  - A meta de 1 alarme falso por semana supõe contagens quase Poisson e taxa estável. Com rajadas, a taxa vai a 2,4 por semana; se a taxa normal dobrar depois do treino, a 4,1.
+- **Modelo 3 (próximo passo):** o 0 no simulador v2 é uma escolha do simulador. O erro é gerado a 10 Hz, dentro da banda da malha, e uma perturbação comum grande domina o resíduo. Não é uma propriedade demonstrada da física.
+- **Bases públicas:**
+  - Na PMSM, as detecções vêm da temperatura de cada sessão de gravação. Só com os sinais elétricos, todos os métodos detectam 0/8, então a base não serve como evidência.
+  - Na SKAB, alarmar sempre já dá F1 0,70. O ganho do Modelo 3 v2 (0,78 → 0,80) não é significativo; a piora em alarme falso é.
+  - "Vizinhos" nessas bases são sensores sem redundância física, então o resultado não se transfere para o encoder.
+- **Comparação de métodos:** com a montagem justa, quase todos os métodos empatam em cerca de 80 de 100. A CVA detecta mais (91, sem alarme falso) e o Modelo 2 é o que indica o rolo.
 
 ## Limitações
 
