@@ -100,6 +100,82 @@ Comparações adicionais (`comparacoes.py`):
 - Isolation Forest no resíduo dos vizinhos: 30/40.
 - Random Forest treinado com falhas simuladas: 13 a 28 falsos alarmes em 240 h, e detecção mais lenta de falhas não vistas no treino.
 
+## Todos os modelos testados
+
+A tabela segue a ordem de desenvolvimento. A coluna "Situação" diz o que ficou no monitor final (`monitor/conjunto.py`). Os números são de testes em sementes não usadas no desenvolvimento e valem só dentro dos simuladores, cujos parâmetros são hipóteses.
+
+**Etapa 1. Simulador sem malha fechada** (`poc/poc_deteccao.py`, `validacao.py`, `comparacoes.py`): 4 falhas × 10 cenários e 48 h normais. Aqui o erro do encoder aparece direto na velocidade lida.
+
+| Modelo | O que faz | Resultado | Situação |
+|---|---|---|---|
+| Referência nula | nunca alarma | 0/40 | só referência |
+| Um vizinho (razão fixa) | compara o rolo com um único vizinho | 20/40: pulsos 10/10, deriva 10/10 (79 min) | só referência |
+| Vizinhos + EWMA | estima a velocidade pelos vizinhos e pelo setpoint (mínimos quadrados) | 30/40: não pega erros de comunicação | substituído pelo torque (etapa 2) |
+| Próprio sinal / próximo passo AR(5) + EWMA | prevê a velocidade pelo passado dela | 20/40: pulsos e ruído, deriva 0/10 | virou o Modelo 3 |
+| Contador de erros de comunicação | erros na última hora, máx. + 2 | erros de comunicação 10/10 | virou o Modelo 1 |
+| Monitor v1 (os três acima) | linha de corte 1,1 × máx. em 8 h | 40/40; 0 alarme falso em 240 h | substituído pelo conjunto |
+| Isolation Forest nos sinais brutos | automático, sem atributo físico | 0/40 | descartado |
+| Isolation Forest no resíduo dos vizinhos | automático sobre atributo físico | 30/40 | descartado |
+| Random Forest com falhas simuladas | supervisionado | 13 a 28 alarmes falsos em 240 h; mais lento em falha não vista | descartado |
+| Linha de corte de 0,8× a 3× o máx. | sensibilidade do limite | 146 alarmes falsos/240 h a 0,8×; 0 a partir de 1,1× | trocada por meta de alarme falso |
+
+**Etapa 2. Simulador com malha fechada v1** (`poc/malha_fechada.py`, `validacao_malha_fechada.py`): 240 h normais. Aqui o drive corrige a velocidade e a deriva lenta some da velocidade lida.
+
+| Modelo | Resultado (40 cenários) | Situação |
+|---|---|---|
+| Só vizinhos (velocidade lida) | 5/40 | descartado em malha fechada |
+| Só próprio sinal | 4/40 | idem |
+| Monitor sem torque | 19/40 (deriva 0/10) | idem |
+| Torque estimado com o torque dos vizinhos | 0/40 | descartado |
+| Só torque (estimativa cinemática) | 30/40; 3 alarmes falsos | virou o Modelo 2 |
+| Monitor com torque | 40/40; 3 alarmes falsos | substituído pelo conjunto |
+
+**Etapa 3. Modelos v2 no simulador v2** (`validacao_avisos.py`, `validacao_torque_v2.py`, `validacao_proximo_passo_v2.py`, `validacao_conjunta.py`)
+
+| Modelo | Resultado | Situação |
+|---|---|---|
+| Avisos: regra máx. + 2 na última hora | 5/10 degradações; 1,5 alarme falso/semana | substituída |
+| **Modelo 1. Avisos: CUSUM de Poisson** | 10/10; 0,60 alarme falso/semana; antecedência mediana de 29 h | **mantido** |
+| Torque v2 (primeira isolação) | isolação certa em 20/30 | substituído pelo v2.1 |
+| **Modelo 2. Torque v2.1 com isolação** | deriva 10/10 nos três rolos; 1 alarme falso/240 h; isolação 29/30 (30/30 com a tensão das pontas) | **mantido** |
+| Próximo passo v2: variantes EWMA, CUSUM, variância, curtose e contagem de picos | ver `validacao_proximo_passo_v2.md` | escolhidas variância em janela e contagem de picos |
+| **Modelo 3. Próximo passo v2** (ARX + branqueamento) | malha lenta: pulsos e ruído 10/10, 0 alarme falso; malha de 10 ms: 0 | **mantido, opcional** |
+| **Monitor conjunto (1 + 2 + 3)** | 117/120; 0 alarme falso em 360 h; isolação certa em 112/117 | **final** |
+
+**Etapa 4. Comparação final no simulador v2** (`comparacao_metodos.py`): mesmas sementes da validação conjunta, 100 cenários com falha nos sinais. Todos os limites foram calibrados para 1 alarme falso por semana.
+
+| Método | Escala | Atrito | Pulsos | Ruído | Total | Alarmes falsos/semana | Indica o rolo |
+|---|---|---|---|---|---|---|---|
+| Monitor conjunto | 30 | 30 | 20 | 18 | 98 | 0,0 | sim |
+| CVA (variáveis canônicas) | 30 | 30 | 20 | 15 | 95 | 4,0 | não |
+| PCA estática (T² e Q) | 30 | 30 | 20 | 2 | 82 | 7,9 | não |
+| PCA dinâmica | 30 | 30 | 20 | 1 | 81 | 7,9 | não |
+| Resíduo de torque + CUSUM (Modelo 2) | 30 | 30 | 20 | 0 | 80 | 0,0 | sim |
+| Conforme sobre o resíduo de torque | 30 | 30 | 20 | 0 | 80 | 0,0 | não |
+| GLR sobre o resíduo de torque | 30 | 30 | 19 | 0 | 79 | 0,5 | sim |
+| Janela adaptativa (ADWIN simplificado) | 30 | 12 | 20 | 0 | 62 | 0,0 | não |
+| Avisos (Modelo 1) | 0 | 0 | 18 | 18 | 36 | 0,5 | sim |
+| Isolation Forest | 10 | 2 | 2 | 0 | 14 | 0,0 | não |
+| Próximo passo (Modelo 3) | 0 | 0 | 0 | 0 | 0 | 0,0 | sim |
+
+O teste de Page-Hinkley não foi rodado, porque usa a mesma recursão da CUSUM. O filtro de Kalman completo ficou para a continuidade.
+
+**Etapa 5. Bases públicas reais** (`bases/`), sem falha de encoder
+
+| Base | Modelo | Resultado |
+|---|---|---|
+| SKAB (protocolo oficial) | próprio sinal + EWMA | F1 0,78; falso alarme 9,3 % |
+| | PCA T² + EWMA | F1 0,78; falso alarme 41,2 % |
+| | vizinhos + EWMA | F1 0,76; falso alarme 57,3 % |
+| | Isolation Forest no resíduo | F1 0,04 |
+| | Modelo 3 v2 | F1 0,80; falso alarme 12,2 % |
+| | Conv-AE (melhor do leaderboard) | F1 0,78; falso alarme 13,55 % |
+| PMSM (inversor) | vizinhos + EWMA | 8/8 falhas; 0 % de falso alarme |
+| | PCA T² + EWMA | 8/8; 0 % |
+| | próprio sinal + EWMA | 4/8 |
+| | Modelo 3 v2 | 3/8 |
+| | Isolation Forest no resíduo + EWMA | 3,6 % de falso alarme |
+
 ## Limitações
 
 - Os dados de encoder são simulados. As bases públicas são reais, mas não têm falha de encoder.
@@ -131,6 +207,7 @@ python validacao_avisos.py
 python validacao_torque_v2.py
 python validacao_proximo_passo_v2.py teste
 python validacao_conjunta.py teste
+python comparacao_metodos.py              # comparação de métodos (~25 min)
 python -m monitor.gerar_dashboard         # dashboard do monitor conjunto (~2 min)
 ```
 
