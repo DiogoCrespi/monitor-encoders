@@ -4,6 +4,65 @@ Detecção de degradação de encoders de velocidade numa linha de papel, treina
 
 Relatório técnico completo (ABNT): `Relatorio-tecnico-ABNT-monitor-encoders.pdf`.
 
+## Arquitetura escolhida: CVA + Modelo 2 adaptativo (`arquiteturas/cva_m2a.py`)
+
+Seis arquiteturas passaram pelo mesmo avaliador (`benchmark/avaliar.py`) em oito famílias de cenários (`benchmark/cenarios.py`):
+- nominal;
+- planta que muda depois do treino;
+- troca de receita;
+- arquivo começando no meio da produção;
+- ruído de alta frequência;
+- variações de avisos;
+- rolo com malha de tensão;
+- relações de redução diferentes.
+
+Cada conjunto de sementes reservado rodou uma única vez:
+- **rodada final:** sementes 800–999, seis arquiteturas;
+- **confirmação:** sementes 1000–1199, depois das correções da revisão de código, com a vencedora e o monitor anterior.
+
+**Como funciona:**
+1. **CVA (detecção):** análise de variáveis canônicas sobre blocos de 60 s. Os atributos são as médias de velocidade, torque e tensão e a "aspereza" do torque, que é onde o ruído do encoder aparece em malha fechada.
+2. **Modelo 2 adaptativo (rolo e causa):**
+   - resíduo de torque com as assinaturas de isolação;
+   - regressor físico de draw (CLP, ou lido dos encoders se o CLP estiver desatualizado);
+   - quarentena na troca de receita;
+   - acompanhamento lento do material;
+   - detector de degrau de material.
+3. **Modelo 1 (avisos do drive):** opcional.
+
+**Fusão:** OU entre os detectores, com a meta de 1 alarme falso por semana dividida entre os componentes. Um alarme da CVA e a confirmação do Modelo 2 formam um só incidente.
+
+**Modo causal (padrão):** nenhum alarme é retroativo, e cada alarme sai na hora em que a decisão é tomada.
+
+**Confirmação** (sementes 1000–1199; detecção · alarmes falsos por semana; 95 % = limite superior):
+
+| Família | Monitor anterior (Modelos 1+2+3) | **CVA + Modelo 2 adaptativo** |
+|---|---|---|
+| Nominal (120 falhas, 960 h normais) | 119/120 · 0,70 | **119/120 · 0** (95 %: < 0,52) |
+| Troca de receita | 100/100 · 115 | **100/100 · 1,96** |
+| Papel (EA) ou draw mudam depois do treino | 240/240 · ~169 | **~0,3** nessas variantes |
+| Atrito ±10 % depois do treino | idem | ~37, com causa "mecânica" no rolo certo |
+| Avisos raros, ausentes ou em rajada | 90/120 · 1,92 | **120/120 · 0,53** |
+| Ruído de alta frequência | 80/80 · 0,70 | **80/80 · 0** |
+| Arquivo começando no meio da produção | 70/70 · 1,05 | **70/70 · 0** |
+| Rolo com malha de tensão | 91/100 · 1,40 | **100/100 · 2,45**, isolação 88/100 |
+| Relações de redução diferentes | 100/100 · 0,70 | 100/100 · 0, isolação 68/100 |
+
+O atraso mediano foi de 27 a 75 min na vencedora, contra 59 a 162 min no monitor anterior.
+
+**O que cada alternativa mostrou** (rodada final, mesmo avaliador):
+- **CVA + Modelo 2 sem adaptação:** quebra quando o papel ou a receita mudam (83 alarmes falsos/semana).
+- **Modelo 2 adaptativo sozinho:** aguenta as mudanças, mas perde ruído e avisos (76/120 no nominal).
+- ***Autoencoder*:** 80/120 no nominal e não indica o rolo. A CVA ganha porque as relações são lineares e o que importa é o branqueamento com defasagens.
+
+As notas de projeto estão em `arquiteturas/*.md`.
+
+**Limitações que continuam:**
+- **Atrito que muda depois do treino:** gera alarmes repetidos de causa "mecânica". Na operação, trate alarmes repetidos do mesmo rolo e causa como uma ocorrência aberta até a manutenção confirmar, e recalibre depois de manutenção mecânica.
+- **Mudança de draw num rolo só, sem registro no CLP:** é fisicamente igual a uma deriva do encoder desse rolo. Só o setpoint distingue as duas.
+- **Calibração:** é conservadora (fica abaixo da meta de 1/semana) e exige cerca de 12 dias de produção.
+- **Base dos números:** continua sendo simulação. O simulador e o detector compartilham a física.
+
 ## Método
 
 Quatro indicadores sobre o encoder monitorado:

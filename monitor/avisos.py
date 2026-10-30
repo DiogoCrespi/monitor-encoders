@@ -314,10 +314,12 @@ class MonitorAvisos:
 
     @staticmethod
     def _marcar_causa_comum(alarmes, janela_s=600.0):
-        """Varios encoders alarmando juntos na mesma familia = provavel causa comum (EMC, rede)."""
+        """Varios encoders alarmando juntos na mesma familia = provavel causa comum (EMC, rede). So olha
+        para TRAS (alarmes nos janela_s anteriores, inclusive o proprio): a severidade de um alarme ja
+        emitido nunca muda por um alarme futuro (streaming)."""
         for a in alarmes:
             outros = {b["encoder"] for b in alarmes if b["familia"] == a["familia"]
-                      and abs(b["t_s"] - a["t_s"]) <= janela_s}
+                      and 0 <= a["t_s"] - b["t_s"] <= janela_s}
             if len(outros) >= 2:
                 a["causa_comum"] = True
                 if "causa comum" not in a["mensagem"]:

@@ -166,7 +166,9 @@ def test_varios_encoders_juntos_marca_causa_comum(monitor_sintetico):
               for i in range(8) for j, e in enumerate(["pb1", "pb2"])]
     alarmes, _ = monitor_sintetico.analisar(_log(linhas), t0, t0 + DIA)
     assert {a["encoder"] for a in alarmes} == {"pb1", "pb2"}
-    assert all(a["causa_comum"] for a in alarmes) and "causa comum" in alarmes[0]["mensagem"]
+    # so para tras: o 1o alarme do par nao sabe do 2o (streaming); os seguintes sim
+    assert not alarmes[0]["causa_comum"]
+    assert all(a["causa_comum"] for a in alarmes[1:]) and "causa comum" in alarmes[1]["mensagem"]
 
 
 # ------------------------------------------------------------------ regra atual e simulador

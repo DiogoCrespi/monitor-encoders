@@ -35,6 +35,9 @@ from . import SP_AQUECIMENTO, V_MIN_REGIME
 ROLOS = ("festoon", "pb1", "pb2")
 _ENC = {"festoon": (1.0, 0.0, -1.0), "pb1": (-1.0, 1.0, 0.0), "pb2": (0.0, -1.0, 1.0)}
 HIPOTESES = [("encoder", r) for r in ROLOS] + [("mecanica", r) for r in ROLOS]
+# coluna booleana opcional: amostra fora do regime por dado invalido (NaN, lacuna), marcada pelo preparo da
+# entrada (arquiteturas/m2_adaptativo.preparar_entrada); o portao a respeita
+COL_FORA = "_fora_regime"
 
 
 def _ewma(x, lam):
@@ -77,6 +80,8 @@ class MonitorTorqueV2:
                  - s.rolling(self.janela, min_periods=1).min()).to_numpy()
         ok = (s.to_numpy() >= self.v_min) & (faixa < 1.0)
         ok[: self.janela] = False
+        if COL_FORA in df.columns:
+            ok &= ~df[COL_FORA].to_numpy(bool)
         return ok
 
     def _x(self, df, rolo):
@@ -189,7 +194,12 @@ class MonitorTorqueV2:
     def _alarmes(self, Z, h, bloco=2000):
         """Varre Z (um bloco por linha) com estado; devolve [(indice, hipotese, sinal)].
         Alarme quando max > h por `persist` blocos seguidos e fora do intervalo minimo;
-        depois do alarme a estatistica volta a zero."""
+        depois do alarme a estatistica volta a zero. Linhas nao finitas de Z sao puladas (estatistica
+        congelada nelas, como fora do regime) - um NaN nunca cala a CUSUM."""
+        fin = np.isfinite(Z).all(axis=1) if len(Z) else np.ones(0, bool)
+        if not fin.all():
+            pos_f = np.flatnonzero(fin)
+            return [(int(pos_f[i]), j, s) for i, j, s in self._alarmes(Z[fin], h, bloco)]
         Zb_all = np.hstack([Z, -Z])
         nh = Z.shape[1]
         out, pos, c, run, min_prox = [], 0, np.zeros(2 * nh), 0, 0
