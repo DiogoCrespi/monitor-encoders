@@ -40,8 +40,8 @@ Cada conjunto de sementes reservado rodou uma única vez:
 |---|---|---|
 | Nominal (120 falhas, 960 h normais) | 119/120 · 0,70 | **119/120 · 0** (95 %: < 0,52) |
 | Troca de receita | 100/100 · 115 | **100/100 · 1,96** |
-| Papel (EA) ou draw mudam depois do treino | 240/240 · ~169 | **~0,3** nessas variantes |
-| Atrito ±10 % depois do treino | idem | ~37, com causa "mecânica" no rolo certo |
+| Papel (EA) ou draw mudam depois do treino | 160/160 · 208 | **160/160 · 0,61** |
+| Atrito ±10 % depois do treino | 80/80 · 91 | 80/80 · 46, com causa "mecânica" no rolo certo |
 | Avisos raros, ausentes ou em rajada | 90/120 · 1,92 | **120/120 · 0,53** |
 | Ruído de alta frequência | 80/80 · 0,70 | **80/80 · 0** |
 | Arquivo começando no meio da produção | 70/70 · 1,05 | **70/70 · 0** |
